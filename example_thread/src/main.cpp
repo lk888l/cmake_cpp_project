@@ -1,83 +1,123 @@
 #include <iostream>
-#include <vector>
+#include <future>
 #include <thread>
+#include <queue>
+#include <vector>
+#include <functional>
+#include <condition_variable>
 #include <mutex>
-#include <chrono>
-#include <atomic>
-#include <string>
-#include <random>
 
-// 颜色代码，增加视觉趣味性
-const std::string GREEN = "\033[32m";
-const std::string RED   = "\033[31m";
-const std::string CYAN  = "\033[36m";
-const std::string RESET = "\033[0m";
+class ThreadPool
+{
+    public:
+    ThreadPool(size_t n)
+        : stop_(false)
+    {
+        for (size_t i = 0; i < n; ++i)
+        {
+            workers_.emplace_back([this] {
+                while (true)
+                {
+                    std::function<void()> task;
 
-// 全局资源
-int firewall_hp = 1000;          // 防火墙总生命值
-std::mutex mtx;                 // 保护生命值的锁
-std::atomic<bool> system_cracked{false}; // 系统是否被攻破
+                    {
+                        std::unique_lock lock(mutex_);
 
-// 模拟黑客攻击函数
-void hacker_attack(int id, int power) {
-    std::random_device rd;
-    std::mt19937_64 gen(rd());
-    std::uniform_int_distribution<> sleep_dist(100, 500);
+                        cv_.wait(lock, [this] {
+                            return stop_ || !tasks_.empty();
+                        });
 
-    while (firewall_hp > 0) {
-        // 模拟攻击准备时间
-        std::this_thread::sleep_for(std::chrono::milliseconds(sleep_dist(gen)));
+                        if (stop_ && tasks_.empty())
+                            return;
 
-        // 尝试锁定并修改共享资源
-        std::lock_guard<std::mutex> lock(mtx);
+                        task = std::move(tasks_.front());
+                        tasks_.pop();
+                    }
 
-        if (firewall_hp <= 0) break;
-
-        firewall_hp -= power;
-        std::cout << CYAN << "[Hacker #" << id << "]" << RESET
-                  << " 注入恶意封包... 造成 " << power << " 点伤害! "
-                  << "剩余防御力: " << firewall_hp << std::endl;
-
-        if (firewall_hp <= 0) {
-            system_cracked = true;
-            std::cout << RED << "!!! [Hacker #" << id << "] 成功上传病毒，系统崩溃 !!!" << RESET << std::endl;
+                    task();
+                }
+            });
         }
     }
-}
 
-// 模拟系统自愈函数 (深度：后台干扰线程)
-void system_auto_repair() {
-    while (!system_cracked) {
-        std::this_thread::sleep_for(std::chrono::milliseconds(800));
+    template<typename F, typename... Args>
+    auto submit(F&& f, Args&&... args)
+        -> std::future<std::invoke_result_t<F, Args...>>
+    {
+        using ReturnType = std::invoke_result_t<F, Args...>;
 
-        std::lock_guard<std::mutex> lock(mtx);
-        if (firewall_hp > 0 && firewall_hp < 1000) {
-            firewall_hp += 20; // 每秒恢复20点
-            std::cout << GREEN << "[System] 检测到入侵... 启动自愈程序 (+20 HP)" << RESET << std::endl;
+        auto task = std::make_shared<
+            std::packaged_task<ReturnType()>
+        >(
+            std::bind(
+                std::forward<F>(f),
+                std::forward<Args>(args)...
+            )
+        );
+
+        std::future<ReturnType> future = task->get_future();
+
+        {
+            std::lock_guard lock(mutex_);
+
+            tasks_.emplace([task] {
+                (*task)();
+            });
         }
+
+        cv_.notify_one();
+
+        return future;
     }
+
+    ~ThreadPool()
+    {
+        {
+            std::lock_guard lock(mutex_);
+            stop_ = true;
+        }
+
+        cv_.notify_all();
+
+        for (auto& t : workers_)
+            t.join();
+    }
+
+    private:
+        std::vector<std::thread> workers_;
+
+        std::queue<std::function<void()>> tasks_;
+
+        std::mutex mutex_;
+        std::condition_variable cv_;
+
+        bool stop_;
+};
+
+
+int heavy_task(int x)
+{
+    std::this_thread::sleep_for(std::chrono::seconds(1));
+    return x * x;
 }
 
-int main() {
-    std::cout << "--- 正在连接到非法网关 ---" << std::endl;
-    std::vector<std::thread> hackers;
+int main()
+{
+    ThreadPool pool(4);
 
-    // 1. 启动防火墙自愈线程 (后台线程)
-    std::thread repair_service(system_auto_repair);
+    std::vector<std::future<int>> futures;
 
-    // 2. 启动多个黑客线程 (并发攻击)
-    for (int i = 1; i <= 3; ++i) {
-        hackers.emplace_back(hacker_attack, i, 50 + (i * 10));
+    for (int i = 0; i < 8; ++i)
+    {
+        futures.push_back(
+            pool.submit(heavy_task, i)
+        );
     }
 
-    // 3. 等待黑客们完成任务
-    for (auto& t : hackers) {
-        if (t.joinable()) t.join();
+    for (auto& f : futures)
+    {
+        std::cout << f.get() << std::endl;
     }
 
-    // 4. 等待自愈线程结束 (由于原子变量，它会自动停止)
-    if (repair_service.joinable()) repair_service.join();
-
-    std::cout << "--- 任务完成，数据已导出 ---" << std::endl;
-    return 0;
+    std::cout << " concurrent threads supported: " << std::thread::hardware_concurrency() << std::endl;
 }
