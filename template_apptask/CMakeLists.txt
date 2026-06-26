@@ -20,8 +20,8 @@ cmake_minimum_required(VERSION 3.10.0)
 #   - arm-linux          : Buildroot aarch64-buildroot-linux-gnu
 #   - aarch64-gnu        : 独立的 aarch64-none-linux-gnu 工具链
 #   - local              : 本地开发
-set(TARGET_PLATFORM "arm-linux" CACHE STRING 
-    "Select target platform: arm-linux, aarch64-gnu, or local")
+set(TARGET_PLATFORM "local" CACHE STRING 
+    "Select target platform: arm-linux or local")
 
 # ====== 平台配置 ======
 # 根据目标平台调整：toolchain 文件、默认构建类型
@@ -30,12 +30,6 @@ if(TARGET_PLATFORM STREQUAL "arm-linux")
     set(CMAKE_TOOLCHAIN_FILE "${CMAKE_SOURCE_DIR}/cmake/arm64-buildroot.cmake" CACHE FILEPATH "Toolchain file")
     set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type")
     set(_DEFAULT_STATIC_LINKING OFF)
-
-elseif(TARGET_PLATFORM STREQUAL "aarch64-gnu")
-    # 使用 aarch64-none-linux-gnu 工具链（标准 GNU 工具链）
-    set(CMAKE_TOOLCHAIN_FILE "${CMAKE_SOURCE_DIR}/cmake/aarch64-none-linux-gnu.cmake" CACHE FILEPATH "Toolchain file")
-    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type")
-    set(_DEFAULT_STATIC_LINKING ON)
 
 elseif(TARGET_PLATFORM STREQUAL "local")
     # 本地构建：使用宿主机编译器，便于快速迭代与调试
@@ -53,7 +47,7 @@ endif()
 
 message(STATUS "Static linking: ${USE_STATIC_LINKING} (platform: ${TARGET_PLATFORM})")
 
-project(example_thread VERSION 1.0.0 LANGUAGES C CXX)
+project(template_apptask VERSION 1.0.0 LANGUAGES C CXX)
 
 # 导出编译命令文件（供 clangd / 其他工具使用）
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
