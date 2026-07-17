@@ -3,6 +3,7 @@
 #include <chrono>
 #include <cstdio>
 #include <thread>
+#include <print>
 
 #include "vqf.hpp"
 
@@ -68,22 +69,29 @@ void GyroReaderApp::run(const std::atomic_bool& running)
                 angles = {};
             }
 
-            std::printf("%.6f,%.6f,%.6f,%.6f,%.3f,%.3f,%.3f,%.3f,"
-                        "%.6f,%.6f,%.6f,%.6f,%.6f,%.6f\n",
-                        static_cast<double>(quat[0]),
-                        static_cast<double>(quat[1]),
-                        static_cast<double>(quat[2]),
-                        static_cast<double>(quat[3]),
-                        static_cast<double>(angles.roll_deg),
-                        static_cast<double>(angles.pitch_deg),
-                        static_cast<double>(angles.yaw_deg),
-                        static_cast<double>(sample.temperature_c),
-                        static_cast<double>(sample.accel_x_g),
-                        static_cast<double>(sample.accel_y_g),
-                        static_cast<double>(sample.accel_z_g),
-                        static_cast<double>(sample.gyro_x_dps),
-                        static_cast<double>(sample.gyro_y_dps),
-                        static_cast<double>(sample.gyro_z_dps));
+            
+
+            std::print(
+                "{:.6f},{:.6f},{:.6f},"
+                "{:.6f},{:.6f},{:.6f},{:.6f},"
+                "{:.3f},"
+                "{:.6f},{:.6f},{:.6f},"
+                "{:.6f},{:.6f},{:.6f}\n",
+                angles.roll_deg,
+                angles.pitch_deg,
+                angles.yaw_deg,
+                quat[0],
+                quat[1],
+                quat[2],
+                quat[3],
+                sample.temperature_c,
+                sample.accel_x_g,
+                sample.accel_y_g,
+                sample.accel_z_g,
+                sample.gyro_x_dps,
+                sample.gyro_y_dps,
+                sample.gyro_z_dps
+            );
             std::fflush(stdout);
         } else {
             std::fprintf(stderr,

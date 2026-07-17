@@ -1,104 +1,84 @@
-/**
- * @file main.cpp
- * @brief UART 示例程序入口
- * @details 演示如何使用 Uart 类进行串口通信
- * @version 1.0.0
- * @date 2026-05-01
- */
-
-#include <print>
-#include <filesystem>
-#include <algorithm>
-#include <array>
-#include <string>
+#include <charconv>
+#include <cstdio>
 #include <iostream>
-#include "Peripheral/uart/uart.hpp"
-#include "Peripheral/Epoll/EpollManager.hpp"
+#include <optional>
+#include <print>
+#include <string>
+#include <string_view>
+#include <vector>
 
-static std::vector<std::string> list_serial_ports() {
-    std::vector<std::string> ports;
-    const std::array<std::string_view, 5> prefixes = {"ttyS", "ttyUSB", "ttyACM", "ttyAMA", "ttyO"};
+#include "app/uart_demo_app.hpp"
+#include "bsp/uart/linux_uart_port.hpp"
 
-    for (auto const& entry : std::filesystem::directory_iterator("/dev")) {
-        if (!entry.is_character_file()) continue;
-        auto name = entry.path().filename().string();
-        if (std::any_of(prefixes.begin(), prefixes.end(), [&](auto prefix) {
-                return name.rfind(prefix, 0) == 0;
-            })) {
-            ports.push_back(entry.path().string());
+namespace {
+
+constexpr std::uint32_t kDefaultBaudRate = 115200;
+constexpr std::size_t kDefaultReadBufferSize = 256;
+
+[[nodiscard]] std::optional<std::size_t> selectSerialPort(const std::vector<std::string>& ports)
+{
+    while (true) {
+        std::println("请输入要打开的串口编号 (1-{}):", ports.size());
+
+        std::string line;
+        if (!std::getline(std::cin, line)) {
+            std::println("输入结束，程序退出。");
+            return std::nullopt;
         }
-    }
 
-    // std::sort(ports.begin(), ports.end());
-    return ports;
+        std::size_t selection = 0;
+        const auto [end, error] = std::from_chars(line.data(), line.data() + line.size(), selection);
+        if (error != std::errc{} || end != line.data() + line.size()) {
+            std::println("无效输入，请输入数字。");
+            continue;
+        }
+
+        if (selection >= 1 && selection <= ports.size()) {
+            return selection - 1;
+        }
+        std::println("请选择 1 到 {} 之间的编号。", ports.size());
+    }
 }
 
-int main() {
+} // namespace
+
+int main()
+{
     std::println("begin uart example");
 
     try {
-        auto ports = list_serial_ports();
+        const std::vector<std::string> ports = bsp::discoverSerialPorts();
         if (ports.empty()) {
             std::println("未发现串口设备，程序退出。");
             return 0;
         }
+
         std::println("检测到 {} 个串口设备:", ports.size());
-        for (size_t i = 0; i < ports.size(); ++i) {
-            std::println("  [{}] {}", i + 1, ports[i]);
+        for (std::size_t index = 0; index < ports.size(); ++index) {
+            std::println("  [{}] {}", index + 1, ports[index]);
         }
 
-        int selection = 0;
-        while (true) {
-            std::println("请输入要打开的串口编号 (1-{}): ", ports.size());
-            std::string line;
-            if (!std::getline(std::cin, line)) {
-                std::println("输入结束，程序退出。");
-                return 0;
-            }
-
-            try {
-                selection = std::stoi(line);
-            } catch (...) {
-                std::println("无效输入，请输入数字。");
-                continue;
-            }
-
-            if (selection >= 1 && selection <= static_cast<int>(ports.size())) {
-                break;
-            }
-            std::println("请选择 1 到 {} 之间的编号。", ports.size());
+        const std::optional<std::size_t> selected_index = selectSerialPort(ports);
+        if (!selected_index) {
+            return 0;
         }
 
-        const auto selected_port = ports[selection - 1];
+        const std::string& selected_port = ports[*selected_index];
         std::println("正在打开串口：{}", selected_port);
 
-        Uart uart(selected_port, 115200);
-        EpollManager epoll;
-        epoll.add_watch(uart.get_fd(), EPOLLIN);
+        bsp::LinuxUartPort uart(
+            {selected_port, kDefaultBaudRate, kDefaultReadBufferSize});
+        app::UartDemoApp demo(uart, [](std::string_view data) {
+            std::println("Received: {}", data);
+        });
 
-        std::println("Event Loop started. Waiting for data... (0% CPU usage)");
-        uart.write("Hello from example_uart(epoll)!\n");
-
-        auto response = uart.read();
-        if (!response.empty()) {
-            std::println("Received: {}", response);
-        }
-
+        demo.start();
+        std::println("Event loop started. Waiting for data... (0% CPU usage)");
         while (true) {
-            auto ready_fds = epoll.wait(-1);
-            for (int fd : ready_fds) {
-                if (fd == uart.get_fd()) {
-                    auto data = uart.read();
-                    if (!data.empty()) {
-                        std::println("Received: {}", data);
-                    }
-                }
-            }
+            demo.processNext();
         }
-
-    } catch (const std::exception& ex) {
-        std::println("Uart error: {}", ex.what());
+    } catch (const std::exception& exception) {
+        std::println(stderr, "UART error: {}", exception.what());
+        return 1;
     }
-
-    return 0;
 }

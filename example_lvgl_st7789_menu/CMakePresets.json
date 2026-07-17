@@ -1,0 +1,57 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "arm-release",
+      "displayName": "ARM Linux Release",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build/arm-release",
+      "cacheVariables": {
+        "TARGET_PLATFORM": "arm-none-linux-gnueabihf",
+        "CMAKE_BUILD_TYPE": "Release",
+        "LVGL_MENU_BUILD_APP": "ON",
+        "LVGL_MENU_BUILD_TESTS": "OFF",
+        "LVGL_MENU_BUILD_HEADLESS_TESTS": "OFF"
+      }
+    },
+    {
+      "name": "host-tests",
+      "displayName": "Windows Host Tests",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build/host-tests",
+      "cacheVariables": {
+        "TARGET_PLATFORM": "local",
+        "CMAKE_BUILD_TYPE": "Debug",
+        "LVGL_MENU_BUILD_APP": "OFF",
+        "LVGL_MENU_BUILD_TESTS": "ON",
+        "LVGL_MENU_BUILD_HEADLESS_TESTS": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "arm-release",
+      "configurePreset": "arm-release",
+      "jobs": 8
+    },
+    {
+      "name": "host-tests",
+      "configurePreset": "host-tests",
+      "jobs": 8
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "host-tests",
+      "configurePreset": "host-tests",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
