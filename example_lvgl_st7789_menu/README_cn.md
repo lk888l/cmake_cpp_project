@@ -68,10 +68,18 @@ example_lvgl_st7789_menu/
 - 嵌入式 Linux 已提供 `/dev/spidevB.C`；三个按键输入需要 GPIO
   character-device v2；
 - ST7789 模块使用 3.3 V SPI/GPIO 逻辑，常规分辨率为 240 x 240；
-- 三个轻触按键接 GPIO 输入；默认低有效，需要开发板、设备树或外部电阻提供上拉；
+- 三个轻触按键接 GPIO 输入；默认低有效，并请求 SoC 内部上拉；
 - 运行用户有权打开选定的 SPI 和 GPIO 设备。
 
-程序不负责配置 pinmux 和输入 bias，需在设备树或板级配置中预先完成。
+程序不负责配置 pinmux，需在设备树或板级配置中预先把所选引脚设为 GPIO 输入。
+如果板级电气设计有要求，仍可使用外部上拉/下拉电阻。
+
+Luckfox Linux 5.10 BSP 会接受 GPIO v2 bias 标志，但不会把它应用到
+RV1103/RV1106 pinctrl 硬件。因此，当设备树 `compatible` 明确匹配这两款
+Rockchip SoC 时，Linux 按键后端会通过 `/dev/mem` 只写目标引脚对应的两位 IOC
+pull 字段，并在接受按键输入前读回校验。在这些开发板上运行用户还需有权访问
+`/dev/mem`。量产镜像仍应在设备树中加入相同的 `pcfg_pull_up`，保证程序启动前
+引脚就处于上拉状态。
 
 LCD 输出 GPIO 适配器有意保留彩屏参考工程的实现；只有按键输入后端使用 GPIO
 v2 边沿事件。
@@ -92,8 +100,8 @@ v2 边沿事件。
 | 下键 | GPIO 输入与 GND 之间 | `--key-down` |
 | 确认键 | GPIO 输入与 GND 之间 | `--key-ok` |
 
-若采用高有效按键，应按开发板安全的 3.3 V 输入电路接线，提供下拉，并加入
-`--keys-active-high`。
+若采用高有效按键，应按开发板安全的 3.3 V 输入电路接线，并加入
+`--keys-active-high`；此时按键后端会改用内部下拉。
 
 > 有些 LCD 模块直接引出了背光 LED，不能在电流未知时直接用 SoC GPIO 供电。
 > 请按模块要求增加电阻/三极管；若 BL 已安全接到 3.3 V，则不要传
@@ -180,7 +188,7 @@ ctest --preset host-tests
 ```
 
 在单独的本地构建中打开 `LVGL_MENU_BUILD_HEADLESS_TESTS=ON`，可编译 LVGL 并
-验证 240×240、Low 档、8 行缓冲的首帧与页面切换。
+验证 240×240、Low 档、24 行缓冲的首帧与页面切换。
 
 ARM Release 构建完成后，可确认 ELF32 ARM hard-float、静态链接且不存在
 `INTERP` program header：
@@ -216,7 +224,7 @@ RV1103 或相近低资源平台的 `auto` 通常会选择 Low。首次验证可�
 
 ```sh
 ./example_lvgl_st7789_menu \
-  --render-profile low --buffer-lines 8 --stats-interval-ms 2000 \
+  --render-profile low --stats-interval-ms 2000 \
   --spi /dev/spidev0.0 --spi-hz 40000000 \
   --gpiochip /dev/gpiochip0 --dc 13 \
   --key-gpiochip /dev/gpiochip1 --key-up 25 --key-down 26 --key-ok 27
@@ -245,7 +253,7 @@ RV1103 或相近低资源平台的 `auto` 通常会选择 Low。首次验证可�
 | `--key-up <line>` | 必填 | 上键 line offset |
 | `--key-down <line>` | 必填 | 下键 line offset |
 | `--key-ok <line>` | 必填 | 确认键 line offset |
-| `--keys-active-high` | 关闭 | 改用高有效按键 |
+| `--keys-active-high` | 关闭 | 改用内部下拉的高有效按键；默认是内部上拉的低有效按键 |
 | `--debounce-ms <ms>` | `25` | 边沿消抖时间 |
 | `--long-press-ms <ms>` | `600` | 确认键长按阈值 |
 | `--double-click-ms <ms>` | `250` | 手势状态机双击窗口 |
@@ -270,8 +278,8 @@ RV1103 或相近低资源平台的 `auto` 通常会选择 Low。首次验证可�
 同一目标启动新动画前会删除旧动画，快速连按不会积压过时动画。`auto` 读取
 `/proc/meminfo` 和在线 CPU 数；信息不完整时安全回退 Low。Low/Balanced 不对
 整张卡片使用缩放或整体透明 layer；Quality 仅在 LVGL 最大连续空闲块满足预算时
-启用。默认分别为 Low 8 行/20 FPS/+32 KiB、Balanced 12/25/+64 KiB、Quality
-24/30/+128 KiB。
+启用。默认分别为 Low 24 行/20 FPS/+32 KiB、Balanced 32/25/+64 KiB、Quality
+48/30/+128 KiB。
 
 ## 测试与板上验收
 
@@ -301,7 +309,7 @@ RV1103 或相近低资源平台的 `auto` 通常会选择 Low。首次验证可�
 | 按一次产生多次动作 | 检查干扰/接线并增大 `--debounce-ms`；Release + Click 本身是正常手势序列 |
 | 画面偏移或裁切 | 修正 `--width`、`--height`、`--rotation`、`--x-offset`、`--y-offset` |
 | 40 MHz 下画面不稳定 | 尝试 `--spi-hz 20000000` 或 `10000000`，再检查接线与信号完整性 |
-| 只显示顶部一条且 CPU 100% | 用 `arm-release` 重新构建，运行时指定 `--render-profile low --buffer-lines 8`，并查看首帧 LVGL 内存日志 |
+| 只显示顶部一条且 CPU 100% | 用 `arm-release` 重新构建，运行时指定 `--render-profile low` 且不要覆盖成很小的 `--buffer-lines`，并查看首帧 LVGL 内存日志 |
 | Ctrl+C 不能及时退出 | 第一次信号启动清理与超时；再次 Ctrl+C 立即退出，也可调小 `--shutdown-timeout-s` |
 | 中文显示缺字 | 确认两个字体 C 文件已通过字体 target 链接，且子集字符表包含新增文案 |
 

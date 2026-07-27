@@ -6,6 +6,7 @@
 #include <sys/epoll.h>
 #include <sys/eventfd.h>
 #include <sys/ioctl.h>
+#include <sys/mman.h>
 #include <sys/timerfd.h>
 #include <unistd.h>
 
@@ -25,6 +26,7 @@
 #include <thread>
 #include <unordered_set>
 #include <utility>
+#include <string_view>
 
 namespace gpio_button {
 namespace {
@@ -34,6 +36,15 @@ constexpr std::uint32_t kTimerTag = 2;
 constexpr std::uint32_t kButtonTagBase = 100;
 constexpr std::uint32_t kKernelEventBufferSize = 64;
 constexpr std::size_t kReadBatchSize = 32;
+constexpr std::array<std::uint64_t, 5> kRv110xPullRegisterA{
+    0xff388038ULL,
+    0xff5381c0ULL,
+    0xff5481d0ULL,
+    0xff5581e0ULL,
+    0xff568070ULL,
+};
+constexpr std::uint32_t kRv110xPullUp = 1;
+constexpr std::uint32_t kRv110xPullDown = 2;
 
 [[noreturn]] void errnoError(const char* message)
 {
@@ -73,6 +84,125 @@ void setNonBlockingCloseOnExec(int fd)
         ::fcntl(fd, F_SETFL, status_flags | O_NONBLOCK) < 0 ||
         ::fcntl(fd, F_SETFD, FD_CLOEXEC) < 0) {
         errnoError("fcntl(GPIO line fd)");
+    }
+}
+
+bool isRv110x()
+{
+    static const bool detected = [] {
+        const int fd =
+            ::open("/proc/device-tree/compatible", O_RDONLY | O_CLOEXEC);
+        if (fd < 0) {
+            return false;
+        }
+
+        std::array<char, 512> compatible{};
+        const ssize_t bytes = ::read(fd, compatible.data(), compatible.size());
+        const int saved_errno = errno;
+        ::close(fd);
+        errno = saved_errno;
+        if (bytes <= 0) {
+            return false;
+        }
+
+        const std::string_view value(
+            compatible.data(), static_cast<std::size_t>(bytes));
+        return value.find("rockchip,rv1103") != std::string_view::npos ||
+               value.find("rockchip,rv1106") != std::string_view::npos;
+    }();
+    return detected;
+}
+
+std::optional<unsigned int> rv110xGpioBank(const gpiochip_info& chip_info)
+{
+    const auto parse = [](const char* value) -> std::optional<unsigned int> {
+        if (std::strncmp(value, "gpio", 4) != 0 ||
+            value[4] < '0' || value[4] > '4' || value[5] != '\0') {
+            return std::nullopt;
+        }
+        return static_cast<unsigned int>(value[4] - '0');
+    };
+
+    if (const auto bank = parse(chip_info.label)) {
+        return bank;
+    }
+    return parse(chip_info.name);
+}
+
+void applyRv110xBiasFallback(const gpiochip_info& chip_info,
+                             const ButtonConfig& config)
+{
+    if (!isRv110x()) {
+        return;
+    }
+
+    const auto bank = rv110xGpioBank(chip_info);
+    if (!bank) {
+        throw std::runtime_error(
+            "RV1103/RV1106 GPIO chip is not named gpio0..gpio4; "
+            "cannot apply key-bias fallback safely");
+    }
+
+    const std::uint64_t register_address =
+        kRv110xPullRegisterA[*bank] +
+        static_cast<std::uint64_t>(config.line_offset / 8U) * 4U;
+    const unsigned int bit = (config.line_offset % 8U) * 2U;
+    const std::uint32_t pull =
+        config.active_low ? kRv110xPullUp : kRv110xPullDown;
+    const std::uint32_t write_mask = 0x3U << bit;
+    const std::uint32_t command =
+        (write_mask << 16U) | (pull << bit);
+
+    const int memory_fd =
+        ::open("/dev/mem", O_RDWR | O_SYNC | O_CLOEXEC);
+    if (memory_fd < 0) {
+        errnoError(
+            "open(/dev/mem) for RV1103/RV1106 key-bias fallback; "
+            "configure pcfg_pull_up in the device tree or run with permission");
+    }
+
+    const long page_size = ::sysconf(_SC_PAGESIZE);
+    if (page_size <= 0) {
+        const int saved_errno = errno != 0 ? errno : EINVAL;
+        ::close(memory_fd);
+        errno = saved_errno;
+        errnoError("sysconf(_SC_PAGESIZE)");
+    }
+
+    const std::uint64_t page_mask =
+        static_cast<std::uint64_t>(page_size) - 1U;
+    const std::uint64_t page_address = register_address & ~page_mask;
+    const std::size_t register_offset =
+        static_cast<std::size_t>(register_address - page_address);
+    void* const mapping =
+        ::mmap(nullptr, static_cast<std::size_t>(page_size),
+               PROT_READ | PROT_WRITE, MAP_SHARED, memory_fd,
+               static_cast<off_t>(page_address));
+    if (mapping == MAP_FAILED) {
+        const int saved_errno = errno;
+        ::close(memory_fd);
+        errno = saved_errno;
+        errnoError("mmap(RV1103/RV1106 GPIO pull register)");
+    }
+
+    auto* const pull_register = reinterpret_cast<volatile std::uint32_t*>(
+        static_cast<char*>(mapping) + register_offset);
+    *pull_register = command;
+    std::atomic_thread_fence(std::memory_order_seq_cst);
+    const std::uint32_t actual = *pull_register;
+
+    const int unmap_result =
+        ::munmap(mapping, static_cast<std::size_t>(page_size));
+    const int saved_errno = errno;
+    ::close(memory_fd);
+    errno = saved_errno;
+    if (unmap_result < 0) {
+        errnoError("munmap(RV1103/RV1106 GPIO pull register)");
+    }
+
+    if (((actual >> bit) & 0x3U) != pull) {
+        throw std::runtime_error(
+            "RV1103/RV1106 key-bias register read-back mismatch");
     }
 }
 
@@ -250,7 +380,10 @@ private:
                          sizeof(request.consumer) - 1);
             request.config.flags = GPIO_V2_LINE_FLAG_INPUT |
                                    GPIO_V2_LINE_FLAG_EDGE_RISING |
-                                   GPIO_V2_LINE_FLAG_EDGE_FALLING;
+                                   GPIO_V2_LINE_FLAG_EDGE_FALLING |
+                                   (config.active_low
+                                        ? GPIO_V2_LINE_FLAG_BIAS_PULL_UP
+                                        : GPIO_V2_LINE_FLAG_BIAS_PULL_DOWN);
             request.num_lines = 1;
             request.event_buffer_size = kKernelEventBufferSize;
 
@@ -259,6 +392,11 @@ private:
             }
             device.line_fd = request.fd;
             setNonBlockingCloseOnExec(device.line_fd);
+
+            // Luckfox's Linux 5.10 Rockchip GPIO driver accepts GPIO v2 bias
+            // flags but does not forward them to pinctrl. Apply the matching
+            // RV1103/RV1106 IOC field and verify it while the line is owned.
+            applyRv110xBiasFallback(chip_info, config);
 
             gpio_v2_line_values values{};
             values.mask = 1;

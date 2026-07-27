@@ -159,7 +159,7 @@ void printUsage(const char* program)
         << "  --key-up <line>           Required Up line offset\n"
         << "  --key-down <line>         Required Down line offset\n"
         << "  --key-ok <line>           Required Confirm line offset\n"
-        << "  --keys-active-high        Treat all three keys as active-high\n"
+        << "  --keys-active-high        Use active-high keys with internal pull-down\n"
         << "  --debounce-ms <ms>        Debounce time (default 25)\n"
         << "  --long-press-ms <ms>      Confirm Back threshold (default 600)\n"
         << "  --double-click-ms <ms>    Gesture window (default 250)\n"
@@ -387,7 +387,15 @@ int main(int argc, char** argv)
             throw std::runtime_error("resolved buffer-lines exceeds panel height");
         }
         printResources(resources, options.render_profile, policy);
+        if (options.buffer_lines && *options.buffer_lines < 24) {
+            std::cerr
+                << "warning: --buffer-lines below 24 amplifies ST7789 address-window, "
+                   "GPIO, and SPI transaction overhead; omit the override unless memory "
+                   "is critically constrained\n";
+        }
 
+        // The Luckfox Rockchip SPI driver rejects individual transfers larger
+        // than 4 KiB; keep the userspace chunks within that controller limit.
         bsp::LinuxSpiBus spi({options.spi_device, options.spi_hz, 0, 8, 4096});
         bsp::LinuxGpioOutput dc(options.gpio_chip,
                                 static_cast<unsigned int>(options.dc_line),

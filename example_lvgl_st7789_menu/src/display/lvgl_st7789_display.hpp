@@ -32,13 +32,12 @@ public:
 
 private:
     static void flushCallback(lv_display_t* display, const lv_area_t* area, std::uint8_t* pixels);
-    void flush(const lv_area_t* area, const std::uint8_t* pixels);
+    void flush(const lv_area_t* area, std::uint8_t* pixels);
 
     hardware::St7789& panel_;
     LvglDisplayConfig config_;
     lv_display_t* display_{nullptr};
     std::vector<std::uint8_t> draw_buffer_;
-    std::vector<std::uint8_t> transmit_buffer_;
     bsp::Status last_status_{bsp::Status::ok};
     DisplayStats stats_{};
 };

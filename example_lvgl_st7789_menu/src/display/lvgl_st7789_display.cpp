@@ -27,7 +27,6 @@ bool LvglSt7789Display::init()
     const std::size_t buffer_bytes =
         static_cast<std::size_t>(config.width) * config_.bufferLines * 2U;
     draw_buffer_.resize(buffer_bytes);
-    transmit_buffer_.resize(buffer_bytes);
 
     display_ = lv_display_create(config.width, config.height);
     if (display_ == nullptr) return false;
@@ -50,7 +49,7 @@ void LvglSt7789Display::flushCallback(lv_display_t* display,
     lv_display_flush_ready(display);
 }
 
-void LvglSt7789Display::flush(const lv_area_t* area, const std::uint8_t* pixels)
+void LvglSt7789Display::flush(const lv_area_t* area, std::uint8_t* pixels)
 {
     // Keep the first transport failure sticky until the main loop observes it.
     // A later successful area flush in the same LVGL refresh cycle must not
@@ -61,23 +60,25 @@ void LvglSt7789Display::flush(const lv_area_t* area, const std::uint8_t* pixels)
     const std::int32_t height = area->y2 - area->y1 + 1;
     if (width <= 0 || height <= 0) return;
 
-    const std::size_t byte_count =
-        static_cast<std::size_t>(width) * static_cast<std::size_t>(height) * 2U;
+    const std::size_t pixel_count =
+        static_cast<std::size_t>(width) * static_cast<std::size_t>(height);
+    const std::size_t byte_count = pixel_count * 2U;
     const auto startedAt = std::chrono::steady_clock::now();
     ++stats_.flushCount;
     stats_.pixelBytes += byte_count;
-    if (transmit_buffer_.size() < byte_count) transmit_buffer_.resize(byte_count);
-    for (std::size_t i = 0; i < byte_count; i += 2) {
-        transmit_buffer_[i] = pixels[i + 1];
-        transmit_buffer_[i + 1] = pixels[i];
-    }
+
+    // ST7789 consumes RGB565 most-significant byte first. LVGL explicitly
+    // permits the partial draw buffer to be byte-swapped in place in the
+    // synchronous flush callback. Its helper swaps pairs in 32-bit batches,
+    // avoiding both a second buffer and a scalar byte-copy loop.
+    lv_draw_sw_rgb565_swap(pixels, static_cast<std::uint32_t>(pixel_count));
 
     auto status = panel_.setAddressWindow(static_cast<std::uint16_t>(area->x1),
                                           static_cast<std::uint16_t>(area->y1),
                                           static_cast<std::uint16_t>(area->x2),
                                           static_cast<std::uint16_t>(area->y2));
     if (status == bsp::Status::ok) {
-        status = panel_.writePixelBytes(transmit_buffer_.data(), byte_count);
+        status = panel_.writePixelBytes(pixels, byte_count);
     }
     if (status != bsp::Status::ok) {
         last_status_ = status;

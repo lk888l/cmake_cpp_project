@@ -76,11 +76,21 @@ source files from either reference example.
   character-device ABI v2.
 - An ST7789 panel using 3.3 V SPI/GPIO logic, normally 240 x 240 pixels.
 - Three momentary keys on GPIO inputs. The default wiring is active-low and
-  requires pull-ups supplied by the board, device tree, or external resistors.
+  requests the SoC's internal pull-up.
 - Permission to open the selected SPI and GPIO devices.
 
-The program does not configure pinmux or input bias. Do that in the device tree
-or board configuration before launching the application.
+The program does not configure pinmux. Configure the selected pins as GPIO
+inputs in the device tree or board configuration before launching the
+application. External pull resistors may still be used when required by the
+board's electrical design.
+
+The Luckfox Linux 5.10 BSP accepts GPIO v2 bias flags without applying them to
+the RV1103/RV1106 pinctrl hardware. On a matching Rockchip device-tree
+`compatible`, the Linux input backend therefore writes only the requested
+two-bit IOC pull field through `/dev/mem` and reads it back before accepting the
+line. Access to `/dev/mem` is required on these boards. A production image
+should also encode the same `pcfg_pull_up` setting in its device tree so the
+pins are biased correctly before the application starts.
 
 The LCD output GPIO adapter intentionally remains the implementation inherited
 from the display reference; only the button-input backend uses GPIO v2 events.
@@ -102,7 +112,8 @@ from the display reference; only the button-input backend uses GPIO v2 events.
 | Confirm key | GPIO input to GND | `--key-ok` |
 
 For active-high keys, connect each key according to the board's safe 3.3 V
-input circuit, provide a pull-down, and pass `--keys-active-high`.
+input circuit and pass `--keys-active-high`; the input backend then selects
+the internal pull-down.
 
 > Some LCD modules expose the backlight LED directly. Do not source an unknown
 > LED current from a SoC GPIO. Use the module's recommended resistor/transistor
@@ -193,7 +204,7 @@ ctest --preset host-tests
 ```
 
 Set `LVGL_MENU_BUILD_HEADLESS_TESTS=ON` in a separate local build to compile
-LVGL and exercise a 240 x 240 Low-profile first frame with an 8-line buffer.
+LVGL and exercise a 240 x 240 Low-profile first frame with a 24-line buffer.
 
 After an ARM Release build, these checks should report an ELF32 ARM hard-float
 binary, static linkage, and no `INTERP` program header:
@@ -232,7 +243,7 @@ the Low profile. This explicit command is useful while validating resources:
 
 ```sh
 ./example_lvgl_st7789_menu \
-  --render-profile low --buffer-lines 8 --stats-interval-ms 2000 \
+  --render-profile low --stats-interval-ms 2000 \
   --spi /dev/spidev0.0 --spi-hz 40000000 \
   --gpiochip /dev/gpiochip0 --dc 13 \
   --key-gpiochip /dev/gpiochip1 --key-up 25 --key-down 26 --key-ok 27
@@ -261,7 +272,7 @@ the Low profile. This explicit command is useful while validating resources:
 | `--key-up <line>` | required | Up key line offset |
 | `--key-down <line>` | required | Down key line offset |
 | `--key-ok <line>` | required | Confirm key line offset |
-| `--keys-active-high` | off | Use active-high instead of active-low inputs |
+| `--keys-active-high` | off | Use active-high inputs with internal pull-down instead of active-low inputs with internal pull-up |
 | `--debounce-ms <ms>` | `25` | Edge debounce interval |
 | `--long-press-ms <ms>` | `600` | Confirm long-press threshold |
 | `--double-click-ms <ms>` | `250` | Gesture state-machine double-click window |
@@ -287,8 +298,8 @@ Before starting a replacement animation, the application removes the older
 animation on the same target. `auto` reads `/proc/meminfo` and online CPU count;
 missing resource data safely selects Low. Low/Balanced never apply whole-card
 scale or layered opacity. Quality enables them only when LVGL reports a large
-enough contiguous block. Defaults are Low 8 lines/20 FPS/+32 KiB, Balanced
-12/25/+64 KiB, and Quality 24/30/+128 KiB.
+enough contiguous block. Defaults are Low 24 lines/20 FPS/+32 KiB, Balanced
+32/25/+64 KiB, and Quality 48/30/+128 KiB.
 
 ## Tests and board acceptance
 
@@ -320,7 +331,7 @@ On the board, also check behavior that a host test cannot prove:
 | One press produces several actions | Inspect wiring/noise and increase `--debounce-ms`; ordinary Release + Click is an expected gesture sequence |
 | Image is shifted or clipped | Correct `--width`, `--height`, `--rotation`, `--x-offset`, and `--y-offset` |
 | Panel is unstable at 40 MHz | Try `--spi-hz 20000000` or `10000000`, then inspect wiring and signal integrity |
-| Only a top strip renders and CPU reaches 100% | Rebuild with `arm-release`, use `--render-profile low --buffer-lines 8`, and inspect the startup/first-frame LVGL memory report |
+| Only a top strip renders and CPU reaches 100% | Rebuild with `arm-release`, use `--render-profile low` without a small `--buffer-lines` override, and inspect the startup/first-frame LVGL memory report |
 | Ctrl+C does not return promptly | The first signal starts graceful shutdown and a deadline; press it again for immediate exit, or lower `--shutdown-timeout-s` |
 | Chinese text is missing | Confirm both generated font C sources are linked through the font target and that the text is included in the subset charset |
 

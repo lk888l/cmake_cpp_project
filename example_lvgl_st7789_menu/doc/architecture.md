@@ -111,8 +111,16 @@ struct ButtonConfig {
 ```
 
 Each configured key is requested as a Linux GPIO v2 input with rising- and
-falling-edge events. The backend reads the initial level, then registers all
-line fds plus one timerfd and one stop eventfd in a single epoll instance.
+falling-edge events. Active-low inputs request the internal pull-up; the
+active-high override requests the internal pull-down. Luckfox's Linux 5.10
+Rockchip GPIO driver accepts those bias flags without forwarding them to
+pinctrl. If the device-tree `compatible` identifies RV1103 or RV1106, the
+backend additionally writes the matching two-bit IOC pull field through
+`/dev/mem` and verifies the register value. The compatible check, GPIO-chip
+bank name, line range, register table, and read-back all have to agree before
+this fallback can succeed. Other platforms never enter the direct-register
+path. The backend then reads the initial level and registers all line fds plus
+one timerfd and one stop eventfd in a single epoll instance.
 Kernel event timestamps remain the source of gesture duration; `CLOCK_MONOTONIC`
 absolute timerfd deadlines complete pending debounce and long-press decisions
 even if no new edge arrives.
@@ -255,9 +263,10 @@ LVGL application, input router, then `ButtonManager`. Teardown stops and joins
 the GPIO worker before destroying the queue sink or any LVGL objects.
 
 The default display values are 240 x 240, offset 0/0, profile-selected buffer
-and FPS, and 40 MHz SPI. The default input values are active-low, 25 ms
-debounce, 600 ms long press, 250 ms double-click window, 400 ms repeat delay,
-and 100 ms repeat period. See the README CLI table for every option.
+and FPS, and 40 MHz SPI. The default input values are active-low with internal
+pull-up, 25 ms debounce, 600 ms long press, 250 ms double-click window, 400 ms
+repeat delay, and 100 ms repeat period. See the README CLI table for every
+option.
 
 ## Adaptive render policy and memory
 
@@ -269,9 +278,9 @@ systems select Quality. Any matching lower-resource condition wins.
 
 | Profile | Buffer | Target | Added TLSF pool | Layer behavior |
 | --- | ---: | ---: | ---: | --- |
-| Low | 8 lines | 20 FPS | 32 KiB | whole-card layers disabled; dot moves only |
-| Balanced | 12 lines | 25 FPS | 64 KiB | whole-card layers disabled; small-object pulse allowed |
-| Quality | 24 lines | 30 FPS | 128 KiB | large effects allowed only after budget check |
+| Low | 24 lines | 20 FPS | 32 KiB | whole-card layers disabled; dot moves only |
+| Balanced | 32 lines | 25 FPS | 64 KiB | whole-card layers disabled; small-object pulse allowed |
+| Quality | 48 lines | 30 FPS | 128 KiB | large effects allowed only after budget check |
 
 CLI buffer/FPS/heap values override the selected profile. CMake generates
 `lv_conf.h` from `lv_conf.h.in`; `LVGL_MENU_BASE_HEAP_KIB` controls the built-in
@@ -368,7 +377,7 @@ glyph.
 | Input bridge tests | FIFO queue, producer isolation, snapshots, repeat, direction conflict, Confirm exclusivity |
 | Menu tests | carousel wrap, page entry/return, edit retention, 0/100 clamp, switches, animation controls |
 | Render-policy tests | auto thresholds, incomplete-data fallback, overrides, defaults, layer budget |
-| Headless LVGL test | Low/8-line first frame returns, page motion completes, heap remains available, no large layers |
+| Headless LVGL test | Low/24-line first frame returns, page motion completes, heap remains available, no large layers |
 | ARM artifact | ELF32 ARM hard-float, Release, static, no `INTERP` |
 | Board | correct GPIO polarity/offsets, stable display, responsive rapid input, no animation backlog, fatal I/O exit |
 

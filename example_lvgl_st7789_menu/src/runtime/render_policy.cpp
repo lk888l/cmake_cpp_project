@@ -21,7 +21,7 @@ RenderPolicy defaultsFor(RenderProfile profile)
     case RenderProfile::Low:
         return {
             .profile = RenderProfile::Low,
-            .bufferLines = 8,
+            .bufferLines = 24,
             .targetFps = 20,
             .refreshPeriodMs = 50,
             .extraHeapKiB = 32,
@@ -31,7 +31,7 @@ RenderPolicy defaultsFor(RenderProfile profile)
     case RenderProfile::Balanced:
         return {
             .profile = RenderProfile::Balanced,
-            .bufferLines = 12,
+            .bufferLines = 32,
             .targetFps = 25,
             .refreshPeriodMs = 40,
             .extraHeapKiB = 64,
@@ -41,7 +41,7 @@ RenderPolicy defaultsFor(RenderProfile profile)
     case RenderProfile::Quality:
         return {
             .profile = RenderProfile::Quality,
-            .bufferLines = 24,
+            .bufferLines = 48,
             .targetFps = 30,
             .refreshPeriodMs = 33,
             .extraHeapKiB = 128,

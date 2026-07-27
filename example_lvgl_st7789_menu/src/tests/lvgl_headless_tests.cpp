@@ -38,7 +38,7 @@ int main()
             .availableMemoryKiB = 64U * 1024U,
         });
     check(policy.profile == runtime::RenderProfile::Low, "test policy is low");
-    check(policy.bufferLines == 8, "test uses eight render lines");
+    check(policy.bufferLines == 24, "test uses twenty-four render lines");
 
     runtime::LvglMemoryPool pool;
     lv_init();
