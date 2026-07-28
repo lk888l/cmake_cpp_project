@@ -13,8 +13,8 @@
 
 ## 屏幕内容
 
-首页是循环卡片轮播：选中卡片保持在中央，同时露出前后相邻卡片的一部分。四张
-中文卡片对应四个详情页：
+首页采用紧凑的四行菜单和独立动画焦点框。菜单内容保持静止，切换时不再逐帧
+搬运多张大卡片，因此在单核 SPI 平台上也能保持流畅，同时保留四个中文详情页：
 
 | 首页卡片 | 交互内容 |
 | --- | --- |
@@ -53,7 +53,8 @@ example_lvgl_st7789_menu/
     |-- display/                 LVGL 局部缓冲显示桥
     |-- input/                   GPIO v2、手势状态机与按键事件队列
     |-- assets/fonts/            已生成的 16 px / 20 px 中文字体子集
-    |-- app/                     纯菜单模型与 LVGL 视图
+    |-- ui/                      可重定向、不会积压的 LVGL 动画原语
+    |-- app/                     纯菜单模型与 LVGL 展示适配器
     |-- tests/                   主机端状态机和路由测试
     `-- main.cpp                 CLI、资源装配与主循环
 ```
@@ -188,7 +189,7 @@ ctest --preset host-tests
 ```
 
 在单独的本地构建中打开 `LVGL_MENU_BUILD_HEADLESS_TESTS=ON`，可编译 LVGL 并
-验证 240×240、Low 档、24 行缓冲的首帧与页面切换。
+验证 240×240 Low 档的首帧、焦点刷新预算、快速动画重定向、页面切换和堆余量。
 
 ARM Release 构建完成后，可确认 ELF32 ARM hard-float、静态链接且不存在
 `INTERP` program header：
@@ -209,6 +210,16 @@ chmod +x example_lvgl_st7789_menu
   --spi /dev/spidev0.0 --spi-hz 40000000 \
   --gpiochip /dev/gpiochip0 --dc 13 --reset 12 --backlight 14 \
   --key-gpiochip /dev/gpiochip1 --key-up 25 --key-down 26 --key-ok 27
+```
+
+确定性的显示基准不会打开按键 GPIO。它自动执行指定次数的首页焦点切换，输出
+实际 RGB565 字节数与 SPI flush 时间，然后退出：
+
+```sh
+./example_lvgl_st7789_menu \
+  --spi /dev/spidev0.0 --spi-hz 40000000 \
+  --gpiochip /dev/gpiochip0 --dc 13 --reset 12 --backlight 14 \
+  --render-profile low --benchmark-home 20
 ```
 
 首次点屏建议先降到 10 MHz，确认颜色、方向、偏移和接线正确后再提高频率：
@@ -248,6 +259,7 @@ RV1103 或相近低资源平台的 `auto` 通常会选择 Low。首次验证可�
 | `--target-fps <n>` | 随档位 | 覆盖 1–60 FPS 刷新目标 |
 | `--lvgl-extra-heap-kib <n>` | 随档位 | 覆盖附加 LVGL TLSF 池；`0` 表示不添加 |
 | `--stats-interval-ms <ms>` | `0` | 周期输出刷新/定时器/内存统计；`0` 关闭 |
+| `--benchmark-home <count>` | `0` | 自动切换首页焦点、输出显示指标并退出；无需按键 line |
 | `--shutdown-timeout-s <s>` | `3` | 第一次退出信号后的强制退出期限 |
 | `--key-gpiochip <path>` | `/dev/gpiochip0` | 按键输入 GPIO chip |
 | `--key-up <line>` | 必填 | 上键 line offset |
@@ -266,7 +278,7 @@ RV1103 或相近低资源平台的 `auto` 通常会选择 Low。首次验证可�
 
 ## 动画设计
 
-动画时间集中在 `app::MotionTiming`：
+动画时间与“新目标替换旧目标”的规则集中在 `ui` 层：
 
 - 焦点移动：160 ms，ease-out；
 - 确认键按下：Low/Balanced 使用 2 px 位移和边框脉冲，Quality 缩放到 96%；
@@ -275,15 +287,19 @@ RV1103 或相近低资源平台的 `auto` 通常会选择 Low。首次验证可�
 - 圆环/数值重定向：140 ms；
 - 呼吸动画：900 ms 一个周期。
 
-同一目标启动新动画前会删除旧动画，快速连按不会积压过时动画。`auto` 读取
-`/proc/meminfo` 和在线 CPU 数；信息不完整时安全回退 Low。Low/Balanced 不对
-整张卡片使用缩放或整体透明 layer；Quality 仅在 LVGL 最大连续空闲块满足预算时
-启用。默认分别为 Low 24 行/20 FPS/+32 KiB、Balanced 32/25/+64 KiB、Quality
-48/30/+128 KiB。
+同一目标启动新动画前会删除旧动画，快速连按不会积压过时动画。纯菜单模型是
+唯一的导航状态源，不再维护第二套 LVGL encoder/group 焦点状态。首页回归测试
+把单次焦点切换限制在 90,000 像素以内。
+
+`auto` 读取 `/proc/meminfo` 和在线 CPU 数；信息不完整时安全回退 Low。
+Low/Balanced 不对整个控件使用缩放或整体透明 layer；Quality 仅在 LVGL 最大
+连续空闲块满足预算时启用。默认分别为 Low 40 行/30 FPS/+32 KiB、Balanced
+48/40/+64 KiB、Quality 60/50/+128 KiB。
 
 ## 测试与板上验收
 
-主机测试覆盖档位阈值、CLI 覆盖、layer 预算、消抖与抖动恢复、长按边界、双击事件顺序、有效电平、生产者/消费者
+主机测试覆盖档位阈值、CLI 覆盖、layer 预算、首页刷新预算、快速动画重定向、
+消抖与抖动恢复、长按边界、双击事件顺序、有效电平、生产者/消费者
 队列顺序、立即移动、连发时间、主线程停顿后不突发补帧、相反方向键、确认激活与
 返回互斥、菜单循环、数值边界、Switch、编辑模式和页面返回。
 

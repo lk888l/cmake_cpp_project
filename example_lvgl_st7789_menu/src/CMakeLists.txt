@@ -3,6 +3,7 @@ add_subdirectory(runtime)
 
 if(LVGL_MENU_NEEDS_LVGL)
     add_subdirectory(assets/fonts)
+    add_subdirectory(ui)
     add_subdirectory(app)
 endif()
 

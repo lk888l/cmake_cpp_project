@@ -101,6 +101,7 @@ struct Options {
     std::optional<std::uint16_t> target_fps;
     std::optional<std::uint32_t> lvgl_extra_heap_kib;
     std::uint32_t stats_interval_ms{0};
+    std::uint16_t benchmark_home_transitions{0};
     std::uint32_t shutdown_timeout_s{3};
     std::uint32_t debounce_ms{25};
     std::uint32_t long_press_ms{600};
@@ -137,7 +138,8 @@ int parseLine(std::string_view text, std::string_view name)
 void printUsage(const char* program)
 {
     std::cout
-        << "Usage: " << program << " --dc <line> --key-up <line> --key-down <line> --key-ok <line> [options]\n"
+        << "Usage: " << program
+        << " --dc <line> [--key-up <line> --key-down <line> --key-ok <line> | --benchmark-home <count>] [options]\n"
         << "Display:\n"
         << "  --spi <path>              SPI device (default /dev/spidev0.0)\n"
         << "  --spi-hz <hz>             SPI clock (default 40000000)\n"
@@ -153,6 +155,7 @@ void printUsage(const char* program)
         << "  --target-fps <n>          Override profile refresh target (1-60)\n"
         << "  --lvgl-extra-heap-kib <n> Override additional LVGL pool (0 disables it)\n"
         << "  --stats-interval-ms <ms>  Print runtime statistics; 0 disables (default 0)\n"
+        << "  --benchmark-home <count>  Cycle Home focus, print SPI metrics, and exit\n"
         << "  --shutdown-timeout-s <s>  Forced-exit deadline after first signal (default 3)\n"
         << "Keys:\n"
         << "  --key-gpiochip <path>     Key GPIO chip (default /dev/gpiochip0)\n"
@@ -201,6 +204,7 @@ Options parseOptions(int argc, char** argv)
         else if (argument == "--target-fps") options.target_fps = parseUnsigned<std::uint16_t>(next(), "target-fps");
         else if (argument == "--lvgl-extra-heap-kib") options.lvgl_extra_heap_kib = parseUnsigned<std::uint32_t>(next(), "lvgl-extra-heap-kib");
         else if (argument == "--stats-interval-ms") options.stats_interval_ms = parseUnsigned<std::uint32_t>(next(), "stats-interval-ms");
+        else if (argument == "--benchmark-home") options.benchmark_home_transitions = parseUnsigned<std::uint16_t>(next(), "benchmark-home");
         else if (argument == "--shutdown-timeout-s") options.shutdown_timeout_s = parseUnsigned<std::uint32_t>(next(), "shutdown-timeout-s");
         else if (argument == "--key-gpiochip") options.key_gpio_chip = next();
         else if (argument == "--key-up") options.key_up_line = parseLine(next(), "key-up");
@@ -223,7 +227,8 @@ void validateOptions(const Options& options)
         throw std::runtime_error("device paths must not be empty");
     }
     if (options.dc_line < 0) throw std::runtime_error("--dc is required");
-    if (options.key_up_line < 0 || options.key_down_line < 0 || options.key_ok_line < 0) {
+    if (options.benchmark_home_transitions == 0
+        && (options.key_up_line < 0 || options.key_down_line < 0 || options.key_ok_line < 0)) {
         throw std::runtime_error("--key-up, --key-down, and --key-ok are required");
     }
     if (options.spi_hz == 0 || options.width == 0 || options.height == 0) {
@@ -237,6 +242,8 @@ void validateOptions(const Options& options)
         throw std::runtime_error("lvgl-extra-heap-kib is unreasonably large");
     if (options.stats_interval_ms != 0 && options.stats_interval_ms < 100)
         throw std::runtime_error("stats-interval-ms must be 0 or at least 100");
+    if (options.benchmark_home_transitions > 1000)
+        throw std::runtime_error("benchmark-home must not exceed 1000 transitions");
     if (options.shutdown_timeout_s == 0 || options.shutdown_timeout_s > 300)
         throw std::runtime_error("shutdown-timeout-s must be between 1 and 300");
     if (options.rotation != 0 && options.rotation != 90 &&
@@ -251,10 +258,12 @@ void validateOptions(const Options& options)
     struct LineUse { std::string_view chip; int line; std::string_view name; };
     std::vector<LineUse> lines = {
         {options.gpio_chip, options.dc_line, "dc"},
-        {options.key_gpio_chip, options.key_up_line, "key-up"},
-        {options.key_gpio_chip, options.key_down_line, "key-down"},
-        {options.key_gpio_chip, options.key_ok_line, "key-ok"},
     };
+    if (options.benchmark_home_transitions == 0) {
+        lines.push_back({options.key_gpio_chip, options.key_up_line, "key-up"});
+        lines.push_back({options.key_gpio_chip, options.key_down_line, "key-down"});
+        lines.push_back({options.key_gpio_chip, options.key_ok_line, "key-ok"});
+    }
     if (options.reset_line >= 0) lines.push_back({options.gpio_chip, options.reset_line, "reset"});
     if (options.backlight_line >= 0) lines.push_back({options.gpio_chip, options.backlight_line, "backlight"});
     for (std::size_t left = 0; left < lines.size(); ++left) {
@@ -357,6 +366,69 @@ void printMemoryStats(std::string_view label)
               << "%\n";
 }
 
+void runHomeBenchmark(app::MenuApplication& menu,
+                      display::LvglSt7789Display& display,
+                      const runtime::RenderPolicy& policy,
+                      std::uint16_t transitionCount)
+{
+    using Clock = std::chrono::steady_clock;
+    using namespace std::chrono_literals;
+
+    display.resetStats();
+    const auto startedAt = Clock::now();
+    auto previous = startedAt;
+    std::uint16_t completedTransitions{};
+
+    for (std::uint16_t transition = 0;
+         transition < transitionCount && stop_requested == 0;
+         ++transition) {
+        menu.handleAction(input::InputAction::Next);
+        const auto deadline = Clock::now() + 220ms;
+        while (Clock::now() < deadline && stop_requested == 0) {
+            const auto now = Clock::now();
+            const auto elapsed =
+                std::chrono::duration_cast<std::chrono::milliseconds>(now - previous);
+            if (elapsed.count() > 0) {
+                const auto elapsedMs = static_cast<std::uint32_t>(
+                    std::min<std::int64_t>(elapsed.count(), 1000));
+                lv_tick_inc(elapsedMs);
+                menu.tick(elapsedMs);
+                previous = now;
+            }
+
+            const std::uint32_t waitMs = lv_timer_handler();
+            if (display.lastStatus() != bsp::Status::ok) {
+                throw std::runtime_error(std::string("benchmark LCD flush failed: ")
+                                         + bsp::toString(display.lastStatus()));
+            }
+            const auto sleepMs = waitMs == LV_NO_TIMER_READY
+                ? std::min<std::uint32_t>(policy.refreshPeriodMs, 10U)
+                : std::clamp(waitMs, 1U, 10U);
+            std::this_thread::sleep_for(std::chrono::milliseconds(sleepMs));
+        }
+        if (stop_requested == 0) {
+            ++completedTransitions;
+        }
+    }
+
+    lv_refr_now(display.handle());
+    const auto current = display.stats();
+    const auto elapsed = std::chrono::duration_cast<std::chrono::milliseconds>(
+        Clock::now() - startedAt);
+    std::cout << "benchmark-home: transitions=" << completedTransitions
+              << '/' << transitionCount
+              << " elapsed-ms=" << elapsed.count()
+              << " flushes=" << current.flushCount
+              << " bytes=" << current.pixelBytes
+              << " bytes/transition="
+              << (completedTransitions == 0
+                      ? 0
+                      : current.pixelBytes / completedTransitions)
+              << " flush-ms=" << current.totalFlushTimeUs / 1000U
+              << " flush-max-us=" << current.maxFlushTimeUs << '\n';
+    printMemoryStats("benchmark-home");
+}
+
 class LvglRuntime final {
 public:
     LvglRuntime() { lv_init(); }
@@ -444,6 +516,14 @@ int main(int argc, char** argv)
                 std::chrono::steady_clock::now() - firstFrameStartedAt);
             std::cout << "first-frame=" << firstFrameMs.count() << "ms\n";
             printMemoryStats("first-frame");
+
+            if (options.benchmark_home_transitions != 0) {
+                runHomeBenchmark(
+                    menu, display, policy, options.benchmark_home_transitions);
+                (void)::alarm(0);
+                (void)panel.setBacklight(false);
+                return 0;
+            }
 
             input::ThreeKeyLvglInput keys({
                 std::chrono::milliseconds{options.repeat_delay_ms},

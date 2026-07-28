@@ -15,9 +15,10 @@ before updating the menu.
 
 ## What appears on the display
 
-The home screen is a looping card carousel. The selected card remains in the
-center while part of the previous and next cards remains visible. It opens four
-Chinese pages:
+The home screen is a compact four-row menu with an independently animated focus
+frame. Menu rows stay still, so changing selection does not repaint several
+large cards on every frame. This damage-bounded layout is visibly smoother on a
+single-core SPI target while still exposing all four Chinese pages:
 
 | Home card | Interaction |
 | --- | --- |
@@ -60,7 +61,8 @@ example_lvgl_st7789_menu/
     |-- display/                 LVGL partial-buffer display bridge
     |-- input/                   GPIO v2 manager, gestures, and queued key router
     |-- assets/fonts/            generated 16 px and 20 px Chinese font subsets
-    |-- app/                     pure menu model and LVGL view/application
+    |-- ui/                      replace-on-retarget LVGL motion primitives
+    |-- app/                     pure menu model and LVGL presentation adapter
     |-- tests/                   host-side state-machine and routing tests
     `-- main.cpp                 CLI, resource wiring, and main loop
 ```
@@ -204,7 +206,8 @@ ctest --preset host-tests
 ```
 
 Set `LVGL_MENU_BUILD_HEADLESS_TESTS=ON` in a separate local build to compile
-LVGL and exercise a 240 x 240 Low-profile first frame with a 24-line buffer.
+LVGL and exercise a 240 x 240 Low-profile first frame, focus damage budget,
+rapid animation retargeting, page motion, and heap headroom.
 
 After an ARM Release build, these checks should report an ELF32 ARM hard-float
 binary, static linkage, and no `INTERP` program header:
@@ -249,6 +252,17 @@ the Low profile. This explicit command is useful while validating resources:
   --key-gpiochip /dev/gpiochip1 --key-up 25 --key-down 26 --key-ok 27
 ```
 
+The deterministic display benchmark does not open the key GPIOs. It performs
+the requested number of Home focus transitions, reports real RGB565 bytes and
+SPI flush time, then exits:
+
+```sh
+./example_lvgl_st7789_menu \
+  --spi /dev/spidev0.0 --spi-hz 40000000 \
+  --gpiochip /dev/gpiochip0 --dc 13 --reset 12 --backlight 14 \
+  --render-profile low --benchmark-home 20
+```
+
 ### Command-line reference
 
 | Option | Default | Meaning |
@@ -267,6 +281,7 @@ the Low profile. This explicit command is useful while validating resources:
 | `--target-fps <n>` | profile | Override refresh target from 1 to 60 FPS |
 | `--lvgl-extra-heap-kib <n>` | profile | Override additional LVGL TLSF pool; `0` disables it |
 | `--stats-interval-ms <ms>` | `0` | Periodic flush/timer/memory diagnostics; `0` disables |
+| `--benchmark-home <count>` | `0` | Cycle Home focus, print display metrics, and exit; key lines are not required |
 | `--shutdown-timeout-s <s>` | `3` | Forced-exit deadline after the first termination signal |
 | `--key-gpiochip <path>` | `/dev/gpiochip0` | Key input GPIO chip |
 | `--key-up <line>` | required | Up key line offset |
@@ -285,7 +300,8 @@ physical lines, and conflicting device assignments are rejected at startup.
 
 ## Motion behavior
 
-Animation durations are centralized in `app::MotionTiming`:
+Animation durations and replace-on-retarget behavior are centralized in the
+`ui` layer:
 
 - focus movement: 160 ms, ease-out;
 - Confirm press: 2 px/card-border pulse in Low/Balanced, or 96% scale in Quality;
@@ -295,15 +311,20 @@ Animation durations are centralized in `app::MotionTiming`:
 - breathing cycle: 900 ms.
 
 Before starting a replacement animation, the application removes the older
-animation on the same target. `auto` reads `/proc/meminfo` and online CPU count;
-missing resource data safely selects Low. Low/Balanced never apply whole-card
-scale or layered opacity. Quality enables them only when LVGL reports a large
-enough contiguous block. Defaults are Low 24 lines/20 FPS/+32 KiB, Balanced
-32/25/+64 KiB, and Quality 48/30/+128 KiB.
+animation on the same target. The pure menu model is the only navigation state
+source; there is no second LVGL encoder/group state to invalidate the same
+controls again. The Home focus test caps one transition at 90,000 pixels.
+
+`auto` reads `/proc/meminfo` and online CPU count; missing resource data safely
+selects Low. Low/Balanced never apply whole-control scale or layered opacity.
+Quality enables them only when LVGL reports a large enough contiguous block.
+Defaults are Low 40 lines/30 FPS/+32 KiB, Balanced 48/40/+64 KiB, and Quality
+60/50/+128 KiB.
 
 ## Tests and board acceptance
 
-Host tests cover render-profile thresholds/overrides/layer budgets, debounce and bounce recovery, long-press boundaries,
+Host tests cover render-profile thresholds/overrides/layer budgets, the Home
+damage budget and rapid animation retargeting, debounce and bounce recovery, long-press boundaries,
 double-click event ordering, polarity, producer/consumer queue ordering,
 immediate movement, repeat timing, delayed-frame no-burst behavior, opposite
 direction handling, Confirm activation/back exclusivity, menu wrapping, value

@@ -59,8 +59,8 @@ void automaticThresholds()
 void defaultsAndOverrides()
 {
     const auto low = runtime::resolveRenderPolicy(resources(1, 128, 64));
-    check(low.bufferLines == 24 && low.targetFps == 20
-              && low.refreshPeriodMs == 50 && low.extraHeapKiB == 32,
+    check(low.bufferLines == 40 && low.targetFps == 30
+              && low.refreshPeriodMs == 33 && low.extraHeapKiB == 32,
           "low defaults");
     check(!low.allowLargeObjectLayers && !low.animateSmallLayers,
           "low disables layer effects");
@@ -73,8 +73,8 @@ void defaultsAndOverrides()
             .targetFps = std::nullopt,
             .extraHeapKiB = std::nullopt,
         });
-    check(balanced.bufferLines == 32 && balanced.targetFps == 25
-              && balanced.refreshPeriodMs == 40 && balanced.extraHeapKiB == 64,
+    check(balanced.bufferLines == 48 && balanced.targetFps == 40
+              && balanced.refreshPeriodMs == 25 && balanced.extraHeapKiB == 64,
           "balanced forced defaults");
 
     const auto quality = runtime::resolveRenderPolicy(
@@ -110,7 +110,7 @@ void profileParsingAndLayerBudget()
             .targetFps = std::nullopt,
             .extraHeapKiB = std::nullopt,
         });
-    const auto expected = (208U + 10U) * 48U * 4U + 8U * 1024U;
+    const auto expected = (208U + 10U) * 60U * 4U + 8U * 1024U;
     check(runtime::estimateLargeLayerBytes(208, 112, quality.bufferLines) == expected,
           "layer estimate follows bounded formula");
     check(!runtime::hasLargeLayerBudget(quality, expected - 1U, 208, 112),

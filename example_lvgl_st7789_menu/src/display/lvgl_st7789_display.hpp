@@ -9,7 +9,7 @@
 namespace display {
 
 struct LvglDisplayConfig final {
-    std::uint16_t bufferLines{24};
+    std::uint16_t bufferLines{40};
     std::uint32_t refreshPeriodMs{33};
 };
 
@@ -29,6 +29,7 @@ public:
     [[nodiscard]] lv_display_t* handle() const { return display_; }
     [[nodiscard]] bsp::Status lastStatus() const { return last_status_; }
     [[nodiscard]] DisplayStats stats() const noexcept { return stats_; }
+    void resetStats() noexcept { stats_ = {}; }
 
 private:
     static void flushCallback(lv_display_t* display, const lv_area_t* area, std::uint8_t* pixels);

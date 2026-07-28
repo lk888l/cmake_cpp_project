@@ -29,9 +29,9 @@ struct RenderOverrides final {
 
 struct RenderPolicy final {
     RenderProfile profile{RenderProfile::Low};
-    std::uint16_t bufferLines{24};
-    std::uint16_t targetFps{20};
-    std::uint32_t refreshPeriodMs{50};
+    std::uint16_t bufferLines{40};
+    std::uint16_t targetFps{30};
+    std::uint32_t refreshPeriodMs{33};
     std::uint32_t extraHeapKiB{32};
     bool allowLargeObjectLayers{false};
     bool animateSmallLayers{false};

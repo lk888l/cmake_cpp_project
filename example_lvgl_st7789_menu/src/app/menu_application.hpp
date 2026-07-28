@@ -11,15 +11,6 @@ struct lv_obj_t;
 
 namespace app {
 
-struct MotionTiming final {
-    static constexpr std::uint32_t FocusMs = 160;
-    static constexpr std::uint32_t PressMs = 70;
-    static constexpr std::uint32_t ReleaseMs = 130;
-    static constexpr std::uint32_t PageMs = 220;
-    static constexpr std::uint32_t ValueMs = 140;
-    static constexpr std::uint32_t BreathingPeriodMs = 900;
-};
-
 /**
  * Main-thread LVGL application for the three-key menu.
  *

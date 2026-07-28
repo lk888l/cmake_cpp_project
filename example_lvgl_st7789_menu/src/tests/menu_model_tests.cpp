@@ -94,7 +94,7 @@ void everyPageCanReturnToHome()
         check(model.snapshot().page == expected[index], "opens selected detail page");
         model.handleAction(input::InputAction::Back);
         check(model.snapshot().page == app::MenuPage::Home, "detail back pops to home");
-        check(model.snapshot().homeSelection == index, "page return preserves carousel selection");
+        check(model.snapshot().homeSelection == index, "page return preserves Home selection");
     }
 }
 

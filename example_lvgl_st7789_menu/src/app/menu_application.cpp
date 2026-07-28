@@ -2,6 +2,7 @@
 
 #include "app/menu_model.hpp"
 #include "assets/fonts/font_ui_cn.hpp"
+#include "ui/motion.hpp"
 
 #include "lvgl.h"
 
@@ -11,16 +12,23 @@
 #include <cstdio>
 #include <mutex>
 #include <string>
-#include <utility>
 #include <vector>
 
 namespace app {
 namespace {
 
+using ui::MotionTiming;
+using ui::retargetAnimation;
+
 constexpr std::int32_t kScreenWidth = 240;
 constexpr std::int32_t kScreenHeight = 240;
 constexpr std::int32_t kNormalScale = LV_SCALE_NONE;
 constexpr std::int32_t kPressedScale = 246; // 96 % of LVGL's 256 base scale.
+constexpr std::int32_t kHomeRowX = 10;
+constexpr std::int32_t kHomeRowY = 46;
+constexpr std::int32_t kHomeRowWidth = 220;
+constexpr std::int32_t kHomeRowHeight = 34;
+constexpr std::int32_t kHomeRowPitch = 38;
 
 constexpr std::uint32_t kColorBackground = 0x0B1020;
 constexpr std::uint32_t kColorPanel = 0x151D31;
@@ -87,32 +95,6 @@ void setArcValue(void* object, std::int32_t value)
     lv_arc_set_value(static_cast<lv_obj_t*>(object), value);
 }
 
-void animateValue(void* object,
-                  lv_anim_exec_xcb_t setter,
-                  std::int32_t from,
-                  std::int32_t to,
-                  std::uint32_t duration,
-                  lv_anim_path_cb_t path = lv_anim_path_ease_out)
-{
-    if (object == nullptr) {
-        return;
-    }
-
-    lv_anim_delete(object, setter);
-    if (from == to) {
-        setter(object, to);
-        return;
-    }
-    lv_anim_t animation;
-    lv_anim_init(&animation);
-    lv_anim_set_var(&animation, object);
-    lv_anim_set_exec_cb(&animation, setter);
-    lv_anim_set_values(&animation, from, to);
-    lv_anim_set_duration(&animation, duration);
-    lv_anim_set_path_cb(&animation, path);
-    lv_anim_start(&animation);
-}
-
 lv_obj_t* createLabel(lv_obj_t* parent,
                       const char* text,
                       const lv_font_t* font,
@@ -162,12 +144,11 @@ struct MenuApplication::Impl final {
     lv_obj_t* root{};
     lv_obj_t* homePage{};
     lv_obj_t* detailPage{};
-    lv_group_t* group{};
-    lv_indev_t* indev{};
 
     std::array<lv_obj_t*, MenuModel::HomeItemCount> cards{};
     std::array<lv_obj_t*, MenuModel::HomeItemCount> cardTitles{};
-    std::array<lv_obj_t*, MenuModel::HomeItemCount> cardHints{};
+    lv_obj_t* homeFocus{};
+    lv_obj_t* homeHint{};
     lv_obj_t* homeCounter{};
     lv_obj_t* homeMode{};
 
@@ -195,9 +176,6 @@ struct MenuApplication::Impl final {
     bool largeObjectLayersEnabled{};
     lv_obj_t* pressedTarget{};
     std::int32_t pressedBaseX{};
-    std::int16_t pendingEncoderDiff{};
-    std::uint32_t pendingKey{};
-    lv_indev_state_t pendingState{LV_INDEV_STATE_RELEASED};
 
     std::mutex telemetryMutex;
     std::array<Telemetry, 3> telemetry{};
@@ -205,14 +183,6 @@ struct MenuApplication::Impl final {
 
     ~Impl()
     {
-        if (indev != nullptr) {
-            lv_indev_delete(indev);
-            indev = nullptr;
-        }
-        if (group != nullptr) {
-            lv_group_delete(group);
-            group = nullptr;
-        }
         if (homePage != nullptr && lv_obj_is_valid(homePage)) {
             lv_obj_delete(homePage);
             homePage = nullptr;
@@ -231,34 +201,6 @@ struct MenuApplication::Impl final {
         case input::PhysicalButton::Confirm: return 2;
         }
         return 0;
-    }
-
-    static void readInput(lv_indev_t* indevHandle, lv_indev_data_t* data)
-    {
-        auto* self = static_cast<Impl*>(lv_indev_get_user_data(indevHandle));
-        data->enc_diff = std::exchange(self->pendingEncoderDiff, 0);
-        data->key = self->pendingKey;
-        data->state = self->pendingState;
-        data->continue_reading = false;
-    }
-
-    void sendEncoder(std::int16_t diff)
-    {
-        pendingEncoderDiff = diff;
-        pendingKey = 0;
-        pendingState = LV_INDEV_STATE_RELEASED;
-        lv_indev_read(indev);
-    }
-
-    void sendEnterClick()
-    {
-        pendingEncoderDiff = 0;
-        pendingKey = LV_KEY_ENTER;
-        pendingState = LV_INDEV_STATE_PRESSED;
-        lv_indev_read(indev);
-        pendingState = LV_INDEV_STATE_RELEASED;
-        lv_indev_read(indev);
-        pendingKey = 0;
     }
 
     bool create(lv_obj_t* targetRoot, const runtime::RenderPolicy& renderPolicy)
@@ -282,22 +224,6 @@ struct MenuApplication::Impl final {
 
         createHome();
 
-        group = lv_group_create();
-        if (group == nullptr) {
-            return false;
-        }
-        lv_group_set_wrap(group, true);
-
-        indev = lv_indev_create();
-        if (indev == nullptr) {
-            return false;
-        }
-        lv_indev_set_type(indev, LV_INDEV_TYPE_ENCODER);
-        lv_indev_set_mode(indev, LV_INDEV_MODE_EVENT);
-        lv_indev_set_read_cb(indev, readInput);
-        lv_indev_set_user_data(indev, this);
-        lv_indev_set_group(indev, group);
-
         if (policy.allowLargeObjectLayers) {
             lv_mem_monitor_t memory{};
             lv_mem_monitor(&memory);
@@ -314,7 +240,6 @@ struct MenuApplication::Impl final {
 
         rendered = model.snapshot();
         layoutHome(false);
-        rebuildGroup();
         created = true;
         return true;
     }
@@ -324,13 +249,17 @@ struct MenuApplication::Impl final {
         for (std::size_t index = 0; index < cards.size(); ++index) {
             auto* card = lv_obj_create(homePage);
             cards[index] = card;
-            lv_obj_set_size(card, 208, 112);
+            lv_obj_set_size(card, kHomeRowWidth, kHomeRowHeight);
+            lv_obj_set_pos(
+                card, kHomeRowX, kHomeRowY + static_cast<std::int32_t>(index) * kHomeRowPitch);
             stylePanel(card);
+            lv_obj_set_style_radius(card, 10, 0);
+            lv_obj_set_style_border_width(card, 0, 0);
             lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE);
 
             auto* marker = lv_obj_create(card);
-            lv_obj_set_size(marker, 5, 48);
-            lv_obj_set_pos(marker, 13, 22);
+            lv_obj_set_size(marker, 4, 18);
+            lv_obj_set_pos(marker, 9, 8);
             lv_obj_set_style_bg_color(marker, color(index % 2 == 0 ? kColorAccent : kColorAccentWarm), 0);
             lv_obj_set_style_bg_opa(marker, LV_OPA_COVER, 0);
             lv_obj_set_style_border_width(marker, 0, 0);
@@ -338,13 +267,22 @@ struct MenuApplication::Impl final {
             lv_obj_remove_flag(marker, LV_OBJ_FLAG_SCROLLABLE);
 
             cardTitles[index] = createLabel(card, kHomeTitles[index], &lv_font_ui_cn_20);
-            lv_obj_set_pos(cardTitles[index], 32, 23);
-            cardHints[index] = createLabel(card, kHomeHints[index], &lv_font_ui_cn_16, kColorMuted);
-            lv_obj_set_pos(cardHints[index], 32, 59);
+            lv_obj_set_pos(cardTitles[index], 21, 3);
         }
 
+        homeFocus = lv_obj_create(homePage);
+        lv_obj_set_size(homeFocus, kHomeRowWidth, kHomeRowHeight);
+        lv_obj_set_pos(homeFocus, kHomeRowX, kHomeRowY);
+        lv_obj_set_style_bg_opa(homeFocus, LV_OPA_TRANSP, 0);
+        lv_obj_set_style_border_width(homeFocus, 2, 0);
+        lv_obj_set_style_border_color(homeFocus, color(kColorAccent), 0);
+        lv_obj_set_style_radius(homeFocus, 10, 0);
+        lv_obj_set_style_pad_all(homeFocus, 0, 0);
+        lv_obj_remove_flag(homeFocus, LV_OBJ_FLAG_SCROLLABLE);
+        lv_obj_remove_flag(homeFocus, LV_OBJ_FLAG_CLICKABLE);
+
         auto* header = lv_obj_create(homePage);
-        lv_obj_set_size(header, kScreenWidth, 45);
+        lv_obj_set_size(header, kScreenWidth, 42);
         lv_obj_set_pos(header, 0, 0);
         lv_obj_set_style_bg_color(header, color(kColorBackground), 0);
         lv_obj_set_style_bg_opa(header, LV_OPA_COVER, 0);
@@ -359,7 +297,7 @@ struct MenuApplication::Impl final {
         lv_obj_align(homeMode, LV_ALIGN_RIGHT_MID, -14, 0);
 
         auto* footer = lv_obj_create(homePage);
-        lv_obj_set_size(footer, kScreenWidth, 36);
+        lv_obj_set_size(footer, kScreenWidth, 42);
         lv_obj_align(footer, LV_ALIGN_BOTTOM_MID, 0, 0);
         lv_obj_set_style_bg_color(footer, color(kColorBackground), 0);
         lv_obj_set_style_bg_opa(footer, LV_OPA_COVER, 0);
@@ -367,8 +305,8 @@ struct MenuApplication::Impl final {
         lv_obj_set_style_pad_all(footer, 0, 0);
         lv_obj_remove_flag(footer, LV_OBJ_FLAG_SCROLLABLE);
 
-        auto* help = createLabel(footer, "上/下 选择   确认 进入", &lv_font_ui_cn_16, kColorMuted);
-        lv_obj_align(help, LV_ALIGN_LEFT_MID, 13, 0);
+        homeHint = createLabel(footer, kHomeHints.front(), &lv_font_ui_cn_16, kColorMuted);
+        lv_obj_align(homeHint, LV_ALIGN_LEFT_MID, 13, 0);
         homeCounter = createLabel(footer, "1/4", &lv_font_ui_cn_16, kColorAccent);
         lv_obj_align(homeCounter, LV_ALIGN_RIGHT_MID, -13, 0);
     }
@@ -376,85 +314,46 @@ struct MenuApplication::Impl final {
     void layoutHome(bool animated)
     {
         const auto selected = model.snapshot().homeSelection;
+        const auto previous = rendered.homeSelection;
         for (std::size_t index = 0; index < cards.size(); ++index) {
-            const auto relative = static_cast<std::uint8_t>(
-                (index + MenuModel::HomeItemCount - selected) % MenuModel::HomeItemCount);
-
-            std::int32_t x = 16;
-            std::int32_t y = 62;
-            std::int32_t scale = kNormalScale;
-            std::int32_t opacity = LV_OPA_COVER;
-            if (relative == 1) {
-                x = 28;
-                y = 188;
-                scale = 232;
-                opacity = 110;
-            }
-            else if (relative == MenuModel::HomeItemCount - 1) {
-                x = 28;
-                y = -51;
-                scale = 232;
-                opacity = 110;
-            }
-            auto* card = cards[index];
-            if (relative == 2) {
-                lv_anim_delete(card, setObjectX);
-                lv_anim_delete(card, setObjectY);
-                lv_anim_delete(card, setObjectScale);
-                lv_anim_delete(card, setObjectOpacity);
-                setObjectScale(card, kNormalScale);
-                setObjectOpacity(card, LV_OPA_COVER);
-                lv_obj_add_flag(card, LV_OBJ_FLAG_HIDDEN);
+            if (animated && index != selected && index != previous) {
                 continue;
             }
-            lv_obj_remove_flag(card, LV_OBJ_FLAG_HIDDEN);
-
-            if (!largeObjectLayersEnabled) {
-                scale = kNormalScale;
-                opacity = LV_OPA_COVER;
-            }
-            const bool highlight = model.snapshot().switches[1];
-            lv_obj_set_style_border_width(card, relative == 0 ? 2 : 1, 0);
-            lv_obj_set_style_border_color(
-                card,
-                color(relative == 0
-                          ? (highlight ? kColorAccent : kColorMuted)
-                          : kColorTrack),
-                0);
+            auto* card = cards[index];
+            lv_anim_delete(card, setObjectX);
+            lv_anim_delete(card, setObjectY);
+            lv_anim_delete(card, setObjectScale);
+            lv_anim_delete(card, setObjectOpacity);
+            lv_obj_set_pos(
+                card, kHomeRowX, kHomeRowY + static_cast<std::int32_t>(index) * kHomeRowPitch);
+            setObjectScale(card, kNormalScale);
+            setObjectOpacity(card, LV_OPA_COVER);
             lv_obj_set_style_bg_color(
                 card,
-                color(relative == 0 && highlight ? kColorPanelFocused : kColorPanel),
+                color(index == selected && model.snapshot().switches[1]
+                          ? kColorPanelFocused
+                          : kColorPanel),
                 0);
             lv_obj_set_style_text_color(
-                cardTitles[index], color(relative == 0 ? kColorText : kColorMuted), 0);
-            lv_obj_set_style_text_color(cardHints[index], color(kColorMuted), 0);
-            if (animated) {
-                animateValue(card, setObjectX, lv_obj_get_x(card), x, MotionTiming::FocusMs);
-                animateValue(card, setObjectY, lv_obj_get_y(card), y, MotionTiming::FocusMs);
-                if (largeObjectLayersEnabled) {
-                    animateValue(card,
-                                 setObjectScale,
-                                 lv_obj_get_style_transform_scale_x_safe(card, LV_PART_MAIN),
-                                 scale,
-                                 MotionTiming::FocusMs);
-                    animateValue(card,
-                                 setObjectOpacity,
-                                 lv_obj_get_style_opa(card, 0),
-                                 opacity,
-                                 MotionTiming::FocusMs);
-                }
-                else {
-                    setObjectScale(card, kNormalScale);
-                    setObjectOpacity(card, LV_OPA_COVER);
-                }
-            }
-            else {
-                lv_obj_set_pos(card, x, y);
-                setObjectScale(card, scale);
-                setObjectOpacity(card, opacity);
-            }
+                cardTitles[index], color(index == selected ? kColorText : kColorMuted), 0);
         }
 
+        const auto focusY =
+            kHomeRowY + static_cast<std::int32_t>(selected) * kHomeRowPitch;
+        lv_obj_set_style_border_color(
+            homeFocus,
+            color(model.snapshot().switches[1] ? kColorAccent : kColorMuted),
+            0);
+        if (animated && previous != selected) {
+            retargetAnimation(
+                homeFocus, setObjectY, lv_obj_get_y(homeFocus), focusY, MotionTiming::FocusMs);
+        }
+        else {
+            lv_anim_delete(homeFocus, setObjectY);
+            lv_obj_set_y(homeFocus, focusY);
+        }
+
+        lv_label_set_text(homeHint, kHomeHints[selected]);
         char counter[8]{};
         std::snprintf(counter, sizeof(counter), "%u/4", static_cast<unsigned>(selected + 1));
         lv_label_set_text(homeCounter, counter);
@@ -645,31 +544,6 @@ struct MenuApplication::Impl final {
         }
     }
 
-    void rebuildGroup()
-    {
-        if (group == nullptr) {
-            return;
-        }
-        lv_group_remove_all_objs(group);
-        const auto& state = model.snapshot();
-        if (state.page == MenuPage::Home) {
-            for (auto* card : cards) {
-                lv_group_add_obj(group, card);
-            }
-            lv_group_focus_obj(cards[state.homeSelection]);
-        }
-        else {
-            for (auto* target : detailFocusTargets) {
-                lv_group_add_obj(group, target);
-            }
-            if (!detailFocusTargets.empty()) {
-                const auto focus = std::min<std::size_t>(state.detailFocus, detailFocusTargets.size() - 1);
-                lv_group_focus_obj(detailFocusTargets[focus]);
-            }
-        }
-        lv_group_set_editing(group, state.mode == MenuMode::Edit);
-    }
-
     lv_obj_t* focusedVisual() const
     {
         const auto& state = model.snapshot();
@@ -700,7 +574,7 @@ struct MenuApplication::Impl final {
                 target,
                 color(selected && state.switches[1] ? kColorPanelFocused : kColorPanel),
                 0);
-            animateValue(target,
+            retargetAnimation(target,
                          setObjectX,
                          lv_obj_get_x(target),
                          selected ? 10 : 14,
@@ -719,7 +593,7 @@ struct MenuApplication::Impl final {
             return;
         }
         const auto value = model.snapshot().arcValue;
-        animateValue(arc,
+        retargetAnimation(arc,
                      setArcValue,
                      lv_arc_get_value(arc),
                      value,
@@ -727,7 +601,7 @@ struct MenuApplication::Impl final {
         char text[8]{};
         std::snprintf(text, sizeof(text), "%u", static_cast<unsigned>(value));
         lv_label_set_text(arcValue, text);
-        animateValue(arcValue, setObjectTranslateY, 3, 0, MotionTiming::ValueMs);
+        retargetAnimation(arcValue, setObjectTranslateY, 3, 0, MotionTiming::ValueMs);
     }
 
     void updateSwitches()
@@ -825,7 +699,6 @@ struct MenuApplication::Impl final {
             case MenuPage::Home: break;
             }
         }
-        rebuildGroup();
     }
 
     void transitionToDetail(MenuPage page)
@@ -840,18 +713,16 @@ struct MenuApplication::Impl final {
         }
 
         lv_obj_move_foreground(detailPage);
-        animateValue(homePage, setObjectX, lv_obj_get_x(homePage), -kScreenWidth, MotionTiming::PageMs);
-        animateValue(detailPage, setObjectX, lv_obj_get_x(detailPage), 0, MotionTiming::PageMs);
-        rebuildGroup();
+        retargetAnimation(homePage, setObjectX, lv_obj_get_x(homePage), -kScreenWidth, MotionTiming::PageMs);
+        retargetAnimation(detailPage, setObjectX, lv_obj_get_x(detailPage), 0, MotionTiming::PageMs);
     }
 
     void transitionToHome()
     {
         lv_obj_move_foreground(homePage);
         layoutHome(false);
-        animateValue(detailPage, setObjectX, lv_obj_get_x(detailPage), kScreenWidth, MotionTiming::PageMs);
-        animateValue(homePage, setObjectX, lv_obj_get_x(homePage), 0, MotionTiming::PageMs);
-        rebuildGroup();
+        retargetAnimation(detailPage, setObjectX, lv_obj_get_x(detailPage), kScreenWidth, MotionTiming::PageMs);
+        retargetAnimation(homePage, setObjectX, lv_obj_get_x(homePage), 0, MotionTiming::PageMs);
     }
 
     void pressFocused(bool pressed)
@@ -874,14 +745,14 @@ struct MenuApplication::Impl final {
             pressedBaseX = lv_obj_get_x(target);
             lv_obj_set_style_border_color(target, color(kColorAccentWarm), 0);
             if (largeObjectLayersEnabled) {
-                animateValue(target,
+                retargetAnimation(target,
                              setObjectScale,
                              lv_obj_get_style_transform_scale_x_safe(target, LV_PART_MAIN),
                              kPressedScale,
                              MotionTiming::PressMs);
             }
             else {
-                animateValue(target,
+                retargetAnimation(target,
                              setObjectX,
                              pressedBaseX,
                              pressedBaseX + 2,
@@ -895,7 +766,7 @@ struct MenuApplication::Impl final {
                     color(model.snapshot().switches[1] ? kColorAccent : kColorMuted),
                     0);
                 if (largeObjectLayersEnabled) {
-                    animateValue(target,
+                    retargetAnimation(target,
                                  setObjectScale,
                                  lv_obj_get_style_transform_scale_x_safe(target, LV_PART_MAIN),
                                  kNormalScale,
@@ -903,7 +774,7 @@ struct MenuApplication::Impl final {
                                  lv_anim_path_overshoot);
                 }
                 else {
-                    animateValue(target,
+                    retargetAnimation(target,
                                  setObjectX,
                                  lv_obj_get_x(target),
                                  pressedBaseX,
@@ -928,16 +799,6 @@ struct MenuApplication::Impl final {
         if (action == input::InputAction::ConfirmReleased) {
             pressFocused(false);
             return;
-        }
-
-        if (action == input::InputAction::Previous) {
-            sendEncoder(-1);
-        }
-        else if (action == input::InputAction::Next) {
-            sendEncoder(1);
-        }
-        else if (action == input::InputAction::Activate) {
-            sendEnterClick();
         }
 
         const auto before = model.snapshot();

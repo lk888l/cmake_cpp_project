@@ -21,9 +21,9 @@ RenderPolicy defaultsFor(RenderProfile profile)
     case RenderProfile::Low:
         return {
             .profile = RenderProfile::Low,
-            .bufferLines = 24,
-            .targetFps = 20,
-            .refreshPeriodMs = 50,
+            .bufferLines = 40,
+            .targetFps = 30,
+            .refreshPeriodMs = 33,
             .extraHeapKiB = 32,
             .allowLargeObjectLayers = false,
             .animateSmallLayers = false,
@@ -31,9 +31,9 @@ RenderPolicy defaultsFor(RenderProfile profile)
     case RenderProfile::Balanced:
         return {
             .profile = RenderProfile::Balanced,
-            .bufferLines = 32,
-            .targetFps = 25,
-            .refreshPeriodMs = 40,
+            .bufferLines = 48,
+            .targetFps = 40,
+            .refreshPeriodMs = 25,
             .extraHeapKiB = 64,
             .allowLargeObjectLayers = false,
             .animateSmallLayers = true,
@@ -41,9 +41,9 @@ RenderPolicy defaultsFor(RenderProfile profile)
     case RenderProfile::Quality:
         return {
             .profile = RenderProfile::Quality,
-            .bufferLines = 48,
-            .targetFps = 30,
-            .refreshPeriodMs = 33,
+            .bufferLines = 60,
+            .targetFps = 50,
+            .refreshPeriodMs = 20,
             .extraHeapKiB = 128,
             .allowLargeObjectLayers = true,
             .animateSmallLayers = true,

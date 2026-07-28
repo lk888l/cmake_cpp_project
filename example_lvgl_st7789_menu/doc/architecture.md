@@ -22,7 +22,8 @@ persistence, PWM brightness, or dynamic page registry.
 
 ```text
 example_lvgl_st7789_menu (main/CLI/lifecycle)
-  |-- menu_app ---------> menu_ui_fonts + LVGL + menu_input_core
+  |-- menu_app ---------> menu_ui + menu_ui_fonts + LVGL + menu_input_core
+  |-- menu_ui ----------> replace-on-retarget LVGL motion primitives
   |-- menu_runtime_core -> resource detection + pure RenderPolicy
   |-- menu_lvgl_runtime -> additional TLSF-pool storage
   |-- menu_input_linux -> menu_input_core + Threads
@@ -43,7 +44,8 @@ host tests
 | `input` core | Debounce/gestures, thread-safe raw-event queue, repeat policy, telemetry snapshots | LVGL calls |
 | `input` Linux | GPIO v2 line requests, `epoll`, `timerfd`, `eventfd`, worker lifecycle | Menu/page decisions |
 | `app` model | Pure page, focus, edit, value, and switch state transitions | Threads, Linux devices, LVGL |
-| `app` view | LVGL object tree, styles, focus/press/page/value animations | GPIO reads or callback-thread work |
+| `ui` | Reusable LVGL animation lifecycle and timing contract | Menu state or hardware access |
+| `app` presentation | LVGL object tree, styles, focus/press/page/value rendering | GPIO reads or callback-thread work |
 | `runtime` | Resource detection, render-policy resolution, additional LVGL pool lifetime | Chip-model checks or widget decisions |
 | `main` | Parse/validate CLI, construct resources, bridge callbacks, run and stop the loop | Widget-specific business rules |
 
@@ -63,7 +65,7 @@ GPIO electrical edge
   -> main loop: ThreeKeyLvglInput::pump()
   -> InputAction sink on the LVGL owner thread
   -> MenuApplication::handleAction()
-  -> pure MenuModel transition + LVGL event-mode/group/view update
+  -> pure MenuModel transition + direct presentation update
   -> LVGL invalidated areas
   -> LvglSt7789Display flush callback
   -> St7789 address window + LinuxSpiBus write
@@ -228,22 +230,24 @@ thread. `handleAction(InputAction)` drives the menu model and immediate press
 feedback. `tick(elapsedMs)` advances the small application animation and
 refreshes time-dependent status without introducing another UI thread.
 
-`app::MotionTiming` is the single timing contract:
+`ui::MotionTiming` is the single timing contract:
 
 | Motion | Duration | Behavior |
 | --- | --- | --- |
-| focus/card movement | 160 ms | ease-out to the newest selection |
+| Home focus frame | 160 ms | ease-out to the newest static row |
 | Confirm down | 70 ms | 2 px/border pulse in Low/Balanced; 96% scale in Quality |
 | Confirm up | 130 ms | overshoot back to full size |
 | page forward/back | 220 ms | directional slide |
 | arc/value change | 140 ms | retargeted interpolation |
 | breathing animation | 900 ms | bounded repeating cycle |
 
-Before targeting an LVGL object with a new animation, remove the old animation
-for that object/property. Never queue one animation per repeat event. Keep
-motion local to cards and controls: large shadows, full-screen translucent
-layers, and permanent full-screen invalidation are intentionally avoided for
-SPI bandwidth.
+`ui::retargetAnimation` deletes the old animation for the same object/property
+before starting the replacement. Never queue one animation per repeat event.
+The pure `MenuModel` is the only navigation state source; the presentation does
+not mirror it into an LVGL encoder/group. Home rows remain static and only the
+independent focus frame moves, bounding per-transition damage. Large shadows,
+full-screen translucent layers, and permanent full-screen invalidation are
+intentionally avoided for SPI bandwidth.
 
 The display bridge uses RGB565 and profile-controlled partial-buffer and refresh
 periods. It always completes the LVGL flush handshake, but keeps
@@ -252,11 +256,13 @@ The main loop observes that error and exits cleanly with a non-zero status.
 
 ## CLI validation and resource lifetime
 
-Parsing happens before Linux resources are opened. Required inputs are LCD D/C
-and all three key lines. Numeric durations and sizes must be positive where the
-underlying interface requires it; rotation is limited to 0/90/180/270. A
-physical GPIO line cannot serve two roles when both roles use the same selected
-gpiochip path.
+Parsing happens before Linux resources are opened. Normal operation requires
+LCD D/C and all three key lines. `--benchmark-home` deliberately requires only
+the display path, cycles Home focus deterministically, reports SPI metrics, and
+exits. Numeric durations and sizes must be positive where the underlying
+interface requires it; rotation is limited to 0/90/180/270. A physical GPIO
+line cannot serve two roles when both roles use the same selected gpiochip
+path.
 
 Construction order is SPI and display GPIO outputs, ST7789/display bridge,
 LVGL application, input router, then `ButtonManager`. Teardown stops and joins
@@ -278,9 +284,9 @@ systems select Quality. Any matching lower-resource condition wins.
 
 | Profile | Buffer | Target | Added TLSF pool | Layer behavior |
 | --- | ---: | ---: | ---: | --- |
-| Low | 24 lines | 20 FPS | 32 KiB | whole-card layers disabled; dot moves only |
-| Balanced | 32 lines | 25 FPS | 64 KiB | whole-card layers disabled; small-object pulse allowed |
-| Quality | 48 lines | 30 FPS | 128 KiB | large effects allowed only after budget check |
+| Low | 40 lines | 30 FPS | 32 KiB | whole-control layers disabled; dot moves only |
+| Balanced | 48 lines | 40 FPS | 64 KiB | whole-control layers disabled; small-object pulse allowed |
+| Quality | 60 lines | 50 FPS | 128 KiB | large effects allowed only after budget check |
 
 CLI buffer/FPS/heap values override the selected profile. CMake generates
 `lv_conf.h` from `lv_conf.h.in`; `LVGL_MENU_BASE_HEAP_KIB` controls the built-in
@@ -289,9 +295,9 @@ is added with `lv_mem_add_pool`. Its storage outlives `lv_deinit`, because theme
 and cache allocations may remain in that pool after application widgets are
 deleted.
 
-Low/Balanced never set whole-card `transform_scale` or layered `opa`; card
-hierarchy comes from position, border, background, and label colors. The
-opposite hidden card is not rendered. Quality estimates a layer as
+Low/Balanced never set whole-control `transform_scale` or layered `opa`; visual
+hierarchy comes from the independent focus frame, background, and label colors.
+Quality estimates a layer as
 `(width + 10) * min(height + 10, bufferLines) * 4 + 8 KiB` and compares that
 against `lv_mem_monitor().free_biggest_size`; an insufficient block disables
 large-object effects for the run. Continuous animation updates are limited to
@@ -375,14 +381,15 @@ glyph.
 | --- | --- |
 | Pure button tests | debounce, bounce cancellation, long-press threshold, click/double-click ordering, polarity |
 | Input bridge tests | FIFO queue, producer isolation, snapshots, repeat, direction conflict, Confirm exclusivity |
-| Menu tests | carousel wrap, page entry/return, edit retention, 0/100 clamp, switches, animation controls |
+| Menu tests | focus wrap, page entry/return, edit retention, 0/100 clamp, switches, animation controls |
 | Render-policy tests | auto thresholds, incomplete-data fallback, overrides, defaults, layer budget |
-| Headless LVGL test | Low/24-line first frame returns, page motion completes, heap remains available, no large layers |
+| Headless LVGL test | Low/40-line first frame, Home damage ≤ 90,000 pixels, rapid retarget settles, page motion completes, heap remains available |
 | ARM artifact | ELF32 ARM hard-float, Release, static, no `INTERP` |
 | Board | correct GPIO polarity/offsets, stable display, responsive rapid input, no animation backlog, fatal I/O exit |
 
 The software input target is visible response within 50 ms after the configured
 debounce interval. Board targets are: complete first frame within two seconds,
 idle CPU below 30% on the constrained profile, ten minutes without heap
-exhaustion, and the profile-selected 20/25/30 FPS target at 40 MHz SPI. These are
+exhaustion, and the profile-selected 30/40/50 FPS target for damage-bounded
+motion at 40 MHz SPI. These are
 acceptance targets, not hard real-time guarantees.
