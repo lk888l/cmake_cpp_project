@@ -1,2 +1,3 @@
 # cmake_cpp_project
-multi-platform_cpp_project. use cmake.
+
+[中文文档](README_cn.md) | [English documentation](README_en.md)

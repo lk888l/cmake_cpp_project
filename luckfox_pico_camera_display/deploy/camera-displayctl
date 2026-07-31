@@ -1,0 +1,171 @@
+#!/bin/sh
+set -eu
+
+APP_DIR=${CAMERA_DISPLAY_DIR:-/userdata/camera-display}
+APP="$APP_DIR/bin/luckfox_pico_camera_display"
+CONFIG="$APP_DIR/camera-display.ini"
+PID_FILE=/var/run/camera-display.pid
+RESTORE_FILE=/var/run/camera-display.restore-rkipc
+LOG_FILE="$APP_DIR/camera-display.log"
+LOG_FILE_PREVIOUS="$APP_DIR/camera-display.log.1"
+MAX_LOG_BYTES=1048576
+RKIPC=${RKIPC_BIN:-/oem/usr/bin/rkipc}
+IQ_DIR=${RKIPC_IQ_DIR:-/oem/usr/share/iqfiles}
+
+export LD_LIBRARY_PATH="/oem/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+read_pid()
+{
+    [ -f "$PID_FILE" ] || return 1
+    PID=$(cat "$PID_FILE")
+    [ -n "$PID" ] && kill -0 "$PID" 2>/dev/null
+}
+
+rotate_log()
+{
+    [ -f "$LOG_FILE" ] || return 0
+    LOG_BYTES=$(wc -c < "$LOG_FILE")
+    case "$LOG_BYTES" in
+        *[!0-9]*) return 0 ;;
+    esac
+    if [ "$LOG_BYTES" -ge "$MAX_LOG_BYTES" ]; then
+        mv -f "$LOG_FILE" "$LOG_FILE_PREVIOUS"
+    fi
+}
+
+load_shutdown_timeout()
+{
+    if [ ! -f "$CONFIG" ]; then
+        SHUTDOWN_TIMEOUT=3
+        return
+    fi
+    SHUTDOWN_TIMEOUT=$(awk '
+        {
+            line = $0
+            gsub(/[[:space:]]/, "", line)
+        }
+        line == "[runtime]" { in_runtime = 1; next }
+        line ~ /^\[/ { in_runtime = 0 }
+        in_runtime && line ~ /^shutdown_timeout_s=/ {
+            sub(/^shutdown_timeout_s=/, "", line)
+            print line
+            exit
+        }
+    ' "$CONFIG" 2>/dev/null || true)
+    case "$SHUTDOWN_TIMEOUT" in
+        ''|*[!0-9]*) SHUTDOWN_TIMEOUT=3 ;;
+    esac
+    if [ "$SHUTDOWN_TIMEOUT" -lt 1 ] || [ "$SHUTDOWN_TIMEOUT" -gt 30 ]; then
+        SHUTDOWN_TIMEOUT=3
+    fi
+}
+
+stop_rkipc()
+{
+    RKIPC_PIDS=$(pidof rkipc 2>/dev/null || true)
+    [ -n "$RKIPC_PIDS" ] || return 0
+    : > "$RESTORE_FILE"
+    kill -TERM $RKIPC_PIDS
+    COUNT=0
+    while pidof rkipc >/dev/null 2>&1 && [ "$COUNT" -lt 5 ]; do
+        sleep 1
+        COUNT=$((COUNT + 1))
+    done
+    if pidof rkipc >/dev/null 2>&1; then
+        echo "rkipc did not release the camera within 5 seconds" >&2
+        return 1
+    fi
+}
+
+restore_rkipc()
+{
+    [ -f "$RESTORE_FILE" ] || return 0
+    rm -f "$RESTORE_FILE"
+    [ -x "$RKIPC" ] || {
+        echo "warning: cannot restore rkipc; $RKIPC is not executable" >&2
+        return 0
+    }
+    # rkipc is restored as the board's background service. Its verbose vendor
+    # output is not camera-display telemetry and must not grow our application
+    # log indefinitely.
+    "$RKIPC" -a "$IQ_DIR" >/dev/null 2>&1 &
+    echo "restored rkipc (pid $!)"
+}
+
+start_app()
+{
+    if read_pid; then
+        echo "camera display is already running (pid $PID)"
+        return 0
+    fi
+    rm -f "$PID_FILE"
+    [ -x "$APP" ] || {
+        echo "missing executable: $APP" >&2
+        return 1
+    }
+    [ -f "$CONFIG" ] || {
+        echo "missing configuration: $CONFIG" >&2
+        return 1
+    }
+    "$APP" --probe
+    stop_rkipc
+    rotate_log
+    (
+        STATUS=0
+        "$APP" --config "$CONFIG" >>"$LOG_FILE" 2>&1 &
+        CHILD=$!
+        echo "$CHILD" > "$PID_FILE"
+        wait "$CHILD" || STATUS=$?
+        rm -f "$PID_FILE"
+        restore_rkipc
+        exit "$STATUS"
+    ) </dev/null >/dev/null 2>&1 &
+    sleep 1
+    if ! read_pid; then
+        echo "camera display failed during startup; inspect $LOG_FILE" >&2
+        return 1
+    fi
+    echo "camera display started (pid $PID)"
+}
+
+stop_app()
+{
+    load_shutdown_timeout
+    if read_pid; then
+        kill -TERM "$PID"
+        COUNT=0
+        while kill -0 "$PID" 2>/dev/null \
+            && [ "$COUNT" -lt "$SHUTDOWN_TIMEOUT" ]; do
+            sleep 1
+            COUNT=$((COUNT + 1))
+        done
+        if kill -0 "$PID" 2>/dev/null; then
+            echo "warning: bounded shutdown expired; terminating pid $PID" >&2
+            kill -KILL "$PID" 2>/dev/null || true
+        fi
+    fi
+    rm -f "$PID_FILE"
+    restore_rkipc
+}
+
+case "${1:-}" in
+    start) start_app ;;
+    stop) stop_app ;;
+    restart) stop_app; start_app ;;
+    status)
+        if read_pid; then
+            echo "camera display is running (pid $PID)"
+        else
+            echo "camera display is stopped"
+            exit 1
+        fi
+        ;;
+    probe) "$APP" --probe ;;
+    self-test)
+        "$APP" --config "$CONFIG" --self-test lcd
+        ;;
+    *)
+        echo "Usage: $0 {start|stop|restart|status|probe|self-test}" >&2
+        exit 2
+        ;;
+esac

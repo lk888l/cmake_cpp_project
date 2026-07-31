@@ -1,6 +1,6 @@
 # LVGL ST7789 三键菜单工程
 
-[English README](README.md) | [架构与扩展说明](doc/architecture.md)
+**中文** | [English](README_en.md) | [架构说明](doc/architecture_cn.md)
 
 `example_lvgl_st7789_menu` 是一个面向嵌入式 Linux 的独立 C++23 示例工程，
 目标硬件为 240 x 240 ST7789 彩屏和三个 GPIO 按键。工程继承
@@ -339,4 +339,4 @@ Low/Balanced 不对整个控件使用缩放或整体透明 layer；Quality 仅�
 工程内字体说明位于 `src/assets/fonts/FONT_LICENSE.md`。
 
 具体再生成命令与字符集维护规则见
-[doc/architecture.md](doc/architecture.md#font-assets)。
+[doc/architecture_cn.md](doc/architecture_cn.md#font-assets)。

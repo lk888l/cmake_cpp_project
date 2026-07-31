@@ -1,6 +1,6 @@
 # example_lvgl_st7789
 
-[English README](README.md)
+**中文** | [English](README_en.md)
 
 这是一个运行在 Linux 用户态的 LVGL 9.2.2 示例，用于驱动 1.54 英寸、
 240x240 分辨率的 ST7789 SPI LCD。工程沿用 `example_icm42688` 的交叉编译

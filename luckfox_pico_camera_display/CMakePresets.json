@@ -1,0 +1,55 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": {
+    "major": 3,
+    "minor": 21,
+    "patch": 0
+  },
+  "configurePresets": [
+    {
+      "name": "host-tests",
+      "displayName": "Windows host tests",
+      "generator": "MinGW Makefiles",
+      "binaryDir": "${sourceDir}/build/host-tests",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Debug",
+        "CAMERA_DISPLAY_BUILD_APP": "OFF",
+        "CAMERA_DISPLAY_BUILD_TESTS": "ON"
+      }
+    },
+    {
+      "name": "rv1103-release",
+      "displayName": "Luckfox Pico RV1103 release",
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/rv1103-release",
+      "toolchainFile": "${sourceDir}/cmake/luckfox-rv1103.cmake",
+      "cacheVariables": {
+        "CMAKE_BUILD_TYPE": "Release",
+        "CAMERA_DISPLAY_BUILD_APP": "ON",
+        "CAMERA_DISPLAY_BUILD_TESTS": "OFF"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "host-tests",
+      "configurePreset": "host-tests",
+      "jobs": 8
+    },
+    {
+      "name": "rv1103-release",
+      "configurePreset": "rv1103-release",
+      "jobs": 8
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "host-tests",
+      "configurePreset": "host-tests",
+      "output": {
+        "outputOnFailure": true
+      }
+    }
+  ]
+}
+
